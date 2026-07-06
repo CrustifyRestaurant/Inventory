@@ -511,17 +511,24 @@ tr:hover td{background:#fafafa;}
   <!-- LOGIN SCREEN -->
 <div id="login-screen">
   <div class="login-box" id="login-box">
-    <div class="login-logo">Crustify <span></div>
+    <div class="login-logo">Crustify</div>
     <div class="login-sub">Inventory Management</div>
     <input
-      class="login-field"
-      id="login-pass"
-      type="password"
-      placeholder="Enter password"
-      onkeydown="if(event.key==='Enter') doLogin()"
-      autofocus
-    >
-    <button class="login-btn" onclick="doLogin()">UNLOCK →</button>
+  class="login-field"
+  id="login-user"
+  type="text"
+  placeholder="Username"
+  style="letter-spacing:1px;text-transform:none;"
+  autofocus
+>
+<input
+  class="login-field"
+  id="login-pass"
+  type="password"
+  placeholder="Password"
+  onkeydown="if(event.key==='Enter') doLogin()"
+>
+<button class="login-btn" onclick="doLogin()">UNLOCK →</button>
     <div class="login-error" id="login-error">❌ Incorrect password. Try again.</div>
   </div>
 </div>
@@ -545,16 +552,22 @@ tr:hover td{background:#fafafa;}
     <em>Restaurant Stock Management</em>
   </div>
   <div class="header-actions">
-    <button class="btn btn-ghost btn-sm" onclick="openM('m-templates')">
-      <i class="fas fa-download"></i> Templates
-    </button>
-    <button class="btn btn-ghost btn-sm" onclick="openOpeningStock()">
-      <i class="fas fa-box-open"></i> Opening Stock
-    </button>
-    <button class="btn btn-ghost btn-sm" onclick="openM('m-sql')">
-      <i class="fas fa-database"></i> SQL Setup
-    </button>
-  </div>
+  <button class="btn btn-ghost btn-sm" id="btn-manage-users" style="display:none;" onclick="openUserManager()">
+    <i class="fas fa-users-cog"></i> Manage Users
+  </button>
+  <button class="btn btn-ghost btn-sm" onclick="openM('m-templates')">
+    <i class="fas fa-download"></i> Templates
+  </button>
+  <button class="btn btn-ghost btn-sm" onclick="openOpeningStock()">
+    <i class="fas fa-box-open"></i> Opening Stock
+  </button>
+  <button class="btn btn-ghost btn-sm" onclick="openM('m-sql')">
+    <i class="fas fa-database"></i> SQL Setup
+  </button>
+  <button class="btn btn-ghost btn-sm" onclick="logout()">
+    <i class="fas fa-sign-out-alt"></i> Logout
+  </button>
+</div>
 </header>
 
 <!-- NAV -->
@@ -1130,6 +1143,57 @@ tr:hover td{background:#fafafa;}
           <button class="btn btn-success btn-sm" onclick="dlTemplate('closing')"><i class="fas fa-download"></i> Download</button>
         </div>
 
+      </div>
+    </div>
+  </div>
+</div>
+<div class="overlay" id="m-users">
+  <div class="modal modal-lg">
+    <div class="modal-head">
+      <span class="modal-title"><i class="fas fa-users-cog"></i> Manage Users</span>
+      <button class="modal-close" onclick="closeM('m-users')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div style="background:#dbeafe;border-radius:10px;padding:14px;margin-bottom:16px;font-size:13px;color:#1e40af;">
+        <strong>Role</strong> is just a display label now. Actual access is controlled per-person using the checkboxes below (for new users) or the <strong>Access</strong> button (for existing users).
+      </div>
+      <div class="form-row" style="margin-bottom:14px;">
+        <div class="form-group" style="margin:0;">
+          <label class="form-label">New Username</label>
+          <input class="form-input" id="nu-username" placeholder="e.g. sara_cashier">
+        </div>
+        <div class="form-group" style="margin:0;">
+          <label class="form-label">Password</label>
+          <input class="form-input" id="nu-password" type="text" placeholder="Set a password">
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Role Label (for display only)</label>
+        <select class="form-select" id="nu-role">
+          <option value="cashier">Cashier</option>
+          <option value="staff">Staff</option>
+          <option value="admin">Admin</option>
+        </select>
+      </div>
+      <div style="background:#f8f9fb;border-radius:10px;padding:14px;margin-bottom:16px;">
+        <div style="font-size:12px;font-weight:700;color:var(--mid);margin-bottom:10px;text-transform:uppercase;">Access — check what this person can see</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:13px;">
+          <label><input type="checkbox" id="nu-perm-dash" checked> Dashboard</label>
+          <label><input type="checkbox" id="nu-perm-ingredients" checked> Ingredients</label>
+          <label><input type="checkbox" id="nu-perm-grn" checked> GRN</label>
+          <label><input type="checkbox" id="nu-perm-closing" checked> Night Closing</label>
+          <label><input type="checkbox" id="nu-perm-consumption" checked> Consumption</label>
+          <label><input type="checkbox" id="nu-perm-manageusers"> Manage Users</label>
+        </div>
+      </div>
+      <button class="btn btn-primary" style="width:100%;margin-bottom:20px;" onclick="createUser()">
+        <i class="fas fa-user-plus"></i> Create User
+      </button>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Username</th><th>Role</th><th>Status</th><th></th></tr></thead>
+          <tbody id="users-tbody"></tbody>
+        </table>
       </div>
     </div>
   </div>
@@ -3245,6 +3309,7 @@ function copySQL() {
 // ─────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
   const today = bizDayToday();
+  applyRolePermissions();
   const setIfEmpty = id => { const el=document.getElementById(id); if(el&&!el.value) el.value=today; };
   ['quick-grn-date','quick-closing-date','cl-filter-date'].forEach(setIfEmpty);
   const consFrom = new Date(); consFrom.setDate(consFrom.getDate()-30);
@@ -3256,28 +3321,179 @@ window.addEventListener('DOMContentLoaded', () => {
 // ─────────────────────────────────────────────
 // LOGIN
 // ─────────────────────────────────────────────
-const APP_PASSWORD = 'Crustify1234';
+let CURRENT_USER = null; // { username, role }
 
-function doLogin() {
-  const entered = document.getElementById('login-pass').value;
-  const box     = document.getElementById('login-box');
-  const err     = document.getElementById('login-error');
-  if (entered === APP_PASSWORD) {
-    sessionStorage.setItem('Crustify_auth', '1');
-    document.getElementById('login-screen').classList.add('hidden');
-    err.classList.remove('show');
-  } else {
-    box.classList.remove('shake');
-    void box.offsetWidth;
-    box.classList.add('shake');
+async function doLogin() {
+  const username = document.getElementById('login-user').value.trim();
+  const entered  = document.getElementById('login-pass').value;
+  const box      = document.getElementById('login-box');
+  const err      = document.getElementById('login-error');
+
+  if (!username || !entered) {
+    box.classList.remove('shake'); void box.offsetWidth; box.classList.add('shake');
+    err.textContent = '❌ Enter username and password.';
+    err.classList.add('show');
+    return;
+  }
+
+  // Bootstrap client if not ready yet (login can happen before init() finishes)
+  if (!sb) sb = window.supabase.createClient(SB_URL, SB_KEY);
+
+  const { data, error } = await sb.from('app_users')
+    .select('*')
+    .ilike('username', username)
+    .eq('password', entered)
+    .maybeSingle();
+
+  if (error || !data || !data.active) {
+    box.classList.remove('shake'); void box.offsetWidth; box.classList.add('shake');
+    err.textContent = (!data ? '❌ Invalid username or password.' : '❌ This account has been disabled.');
     err.classList.add('show');
     document.getElementById('login-pass').value = '';
     document.getElementById('login-pass').focus();
+    return;
   }
+
+  CURRENT_USER = { username: data.username, role: data.role, permissions: data.permissions || {} };
+  sessionStorage.setItem('Crustify_auth', JSON.stringify(CURRENT_USER));
+  document.getElementById('login-screen').classList.add('hidden');
+  err.classList.remove('show');
+  applyRolePermissions();
 }
 
-if (sessionStorage.getItem('Crustify_auth') === '1') {
-  document.getElementById('login-screen').classList.add('hidden');
+// Restore session on page reload
+const savedSession = sessionStorage.getItem('Crustify_auth');
+if (savedSession) {
+  try {
+    CURRENT_USER = JSON.parse(savedSession);
+    document.getElementById('login-screen').classList.add('hidden');
+  } catch(e) { sessionStorage.removeItem('Crustify_auth'); }
+}
+
+function logout() {
+  sessionStorage.removeItem('Crustify_auth');
+  location.reload();
+}
+
+// ── ROLE-BASED UI GATING ──
+function applyRolePermissions() {
+  if (!CURRENT_USER) return;
+  const perms = CURRENT_USER.permissions || {};
+
+  document.getElementById('btn-manage-users').style.display = perms['manage_users'] ? 'inline-flex' : 'none';
+
+  document.querySelectorAll('.nav-btn').forEach(btn => {
+    const tab = btn.dataset.tab;
+    btn.style.display = perms[tab] === false ? 'none' : '';
+  });
+}
+
+// ── USER MANAGEMENT (admin only) ──
+async function openUserManager() {
+  if (!CURRENT_USER || !CURRENT_USER.permissions?.manage_users) { toast('Access denied', 'err'); return; }
+  await renderUsers();
+  openM('m-users');
+}
+
+async function renderUsers() {
+  const { data: users, error } = await sb.from('app_users').select('*').order('username');
+  if (error) { toast('❌ ' + error.message, 'err'); return; }
+
+  document.getElementById('users-tbody').innerHTML = users.map(u => {
+    const p = u.permissions || {};
+    const isSelf = u.username === CURRENT_USER.username;
+    return `
+    <tr>
+      <td style="font-weight:600;">${u.username}${isSelf?' <span class="badge badge-info">You</span>':''}</td>
+      <td><span class="badge ${u.role==='admin'?'badge-bad':u.role==='staff'?'badge-info':'badge-gray'}">${u.role}</span></td>
+      <td><span class="badge ${u.active?'badge-ok':'badge-bad'}">${u.active?'Active':'Disabled'}</span></td>
+      <td>
+        <button class="btn btn-sm" style="background:var(--purple);color:#fff;" onclick="togglePermRow('${u.id}')" ${isSelf?'disabled':''}>
+          <i class="fas fa-key"></i> Access
+        </button>
+        <button class="btn btn-sm btn-outline" onclick="toggleUserActive('${u.id}', ${!u.active})">
+          ${u.active ? 'Disable' : 'Enable'}
+        </button>
+        <button class="btn btn-sm btn-danger" onclick="deleteUser('${u.id}','${u.username}')" ${isSelf?'disabled':''}>
+          <i class="fas fa-trash"></i>
+        </button>
+      </td>
+    </tr>
+    <tr id="perm-row-${u.id}" style="display:none;">
+      <td colspan="4" style="background:#faf5ff;padding:14px;">
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;font-size:13px;margin-bottom:10px;">
+          <label><input type="checkbox" id="perm_${u.id}_t-dash" ${p['t-dash']?'checked':''}> Dashboard</label>
+          <label><input type="checkbox" id="perm_${u.id}_t-ingredients" ${p['t-ingredients']?'checked':''}> Ingredients</label>
+          <label><input type="checkbox" id="perm_${u.id}_t-grn" ${p['t-grn']?'checked':''}> GRN</label>
+          <label><input type="checkbox" id="perm_${u.id}_t-closing" ${p['t-closing']?'checked':''}> Night Closing</label>
+          <label><input type="checkbox" id="perm_${u.id}_t-consumption" ${p['t-consumption']?'checked':''}> Consumption</label>
+          <label><input type="checkbox" id="perm_${u.id}_manage_users" ${p['manage_users']?'checked':''}> Manage Users</label>
+        </div>
+        <button class="btn btn-sm btn-purple" onclick="saveUserPermissions('${u.id}')"><i class="fas fa-save"></i> Save Access</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function togglePermRow(id) {
+  const row = document.getElementById('perm-row-' + id);
+  if (row) row.style.display = row.style.display === 'none' ? 'table-row' : 'none';
+}
+
+async function saveUserPermissions(id) {
+  const permissions = {
+    't-dash':        document.getElementById(`perm_${id}_t-dash`).checked,
+    't-ingredients': document.getElementById(`perm_${id}_t-ingredients`).checked,
+    't-grn':         document.getElementById(`perm_${id}_t-grn`).checked,
+    't-closing':     document.getElementById(`perm_${id}_t-closing`).checked,
+    't-consumption': document.getElementById(`perm_${id}_t-consumption`).checked,
+    'manage_users':  document.getElementById(`perm_${id}_manage_users`).checked
+  };
+  const { error } = await sb.from('app_users').update({ permissions }).eq('id', id);
+  if (error) { toast('❌ ' + error.message, 'err'); return; }
+  toast('✅ Access updated — user must refresh to see changes');
+  renderUsers();
+}
+
+async function createUser() {
+  const username = document.getElementById('nu-username').value.trim();
+  const password = document.getElementById('nu-password').value;
+  const role     = document.getElementById('nu-role').value;
+  if (!username || !password) { toast('Username and password required', 'err'); return; }
+
+  const permissions = {
+    't-dash':        document.getElementById('nu-perm-dash').checked,
+    't-ingredients': document.getElementById('nu-perm-ingredients').checked,
+    't-grn':         document.getElementById('nu-perm-grn').checked,
+    't-closing':     document.getElementById('nu-perm-closing').checked,
+    't-consumption': document.getElementById('nu-perm-consumption').checked,
+    'manage_users':  document.getElementById('nu-perm-manageusers').checked
+  };
+
+  const { error } = await sb.from('app_users').insert({
+    id: uid(), username, password, role, active: true, permissions
+  });
+  if (error) { toast('❌ ' + error.message, 'err'); return; }
+
+  document.getElementById('nu-username').value = '';
+  document.getElementById('nu-password').value = '';
+  toast(`✅ User "${username}" created`);
+  renderUsers();
+}
+
+async function toggleUserActive(id, newState) {
+  const { error } = await sb.from('app_users').update({ active: newState }).eq('id', id);
+  if (error) { toast('❌ ' + error.message, 'err'); return; }
+  toast(newState ? 'User enabled' : 'User access revoked');
+  renderUsers();
+}
+
+async function deleteUser(id, username) {
+  if (!confirm(`Permanently delete user "${username}"?`)) return;
+  const { error } = await sb.from('app_users').delete().eq('id', id);
+  if (error) { toast('❌ ' + error.message, 'err'); return; }
+  toast('User deleted');
+  renderUsers();
 }
 function weightedAvgCost(oldStock, oldCost, newQty, newCost) {
   const oldStockSafe = Math.max(0, safe(oldStock));
