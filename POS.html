@@ -51,6 +51,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
 .pos-topbar-right{display:flex;align-items:center;gap:10px;flex-shrink:0;}
 .topbar-info{color:var(--text2);font-family:'Outfit',sans-serif;font-size:12px;font-weight:600;letter-spacing:.5px;white-space:nowrap;}
 .topbar-info span{color:var(--orange);}
+
 .logout-btn{padding:5px 12px;border-radius:8px;background:rgba(192,57,43,0.15);border:1px solid rgba(192,57,43,0.3);color:var(--red);font-family:'Outfit',sans-serif;font-size:13px;font-weight:700;cursor:pointer;letter-spacing:1px;text-transform:uppercase;}
 
 /* ── VIEWS ── */
@@ -427,7 +428,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
 </button>
     </div>
     <div class="pos-topbar-right">
-      <div class="topbar-info">Staff: <span id="bar-staff">—</span></div>
+  <div class="topbar-info" id="offline-badge" style="display:none;padding:4px 10px;border-radius:8px;font-weight:800;font-size:11px;letter-spacing:1px;"></div>
+  <div class="topbar-info">Staff: <span id="bar-staff">—</span></div>
       <div class="topbar-info" id="bar-time">—</div>
       <div class="topbar-info">Cash: <span id="bar-cash" style="color:var(--green)">Rs 0</span></div>
       <div class="topbar-info">Bill# <span id="bar-billno" style="color:var(--text3)">001</span></div>
@@ -1030,6 +1032,115 @@ const SUPABASE_KEY = "sb_publishable_eS9ECpBHHV65iu1tf8KDHg_ra2iQ-KZ";
 let sb;
 try { sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY); } catch(e) { console.error('Supabase failed'); }
 
+// ══════════════════════════════════
+// OFFLINE QUEUE SYSTEM
+// ══════════════════════════════════
+const OFFLINE_QUEUE_KEY = 'crustify_offline_queue';
+const STAFF_CACHE_KEY = 'crustify_staff_cache';
+let isOnline = navigator.onLine;
+let syncInProgress = false;
+
+function getQueue() {
+  try { return JSON.parse(localStorage.getItem(OFFLINE_QUEUE_KEY) || '[]'); }
+  catch(e) { return []; }
+}
+function saveQueue(q) {
+  localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(q));
+  updateOfflineBadge();
+}
+function queueOfflineAction(table, op, payload, match) {
+  const q = getQueue();
+  q.push({ id: Date.now()+'-'+Math.random().toString(36).slice(2), table, op, payload, match, ts: Date.now() });
+  saveQueue(q);
+}
+
+function updateOfflineBadge() {
+  const q = getQueue();
+  const badge = document.getElementById('offline-badge');
+  if (!badge) return;
+  if (!isOnline) {
+    badge.style.display = 'flex';
+    badge.style.background = 'rgba(192,57,43,0.2)';
+    badge.style.color = '#c0392b';
+    badge.textContent = '📡 OFFLINE' + (q.length ? ' · '+q.length+' pending' : '');
+  } else if (q.length > 0) {
+    badge.style.display = 'flex';
+    badge.style.background = 'rgba(230,126,34,0.2)';
+    badge.style.color = '#e67e22';
+    badge.textContent = '🔄 Syncing '+q.length+'...';
+  } else {
+    badge.style.display = 'none';
+  }
+}
+
+async function sbWrite(table, op, payload, match) {
+  if (!sb) return { error:'no-client' };
+  if (!isOnline) { queueOfflineAction(table, op, payload, match); return { queued:true }; }
+  try {
+    let res;
+    if (op === 'insert') res = await sb.from(table).insert(payload).select();
+    else if (op === 'upsert') res = await sb.from(table).upsert(payload, match?.onConflict ? {onConflict:match.onConflict} : undefined).select();
+    else if (op === 'update') {
+      let q = sb.from(table).update(payload);
+      (match?.eq||[]).forEach(([k,v]) => q = q.eq(k,v));
+      res = await q.select();
+    } else if (op === 'delete') {
+      let q = sb.from(table).delete();
+      (match?.eq||[]).forEach(([k,v]) => q = q.eq(k,v));
+      res = await q;
+    }
+    if (res.error) throw res.error;
+    return res;
+  } catch(e) {
+    console.warn('Write failed — queued offline:', table, op, e.message);
+    queueOfflineAction(table, op, payload, match);
+    return { queued:true };
+  }
+}
+
+async function flushOfflineQueue() {
+  if (syncInProgress || !isOnline || !sb) return;
+  let q = getQueue();
+  if (!q.length) return;
+  syncInProgress = true; updateOfflineBadge();
+  const remaining = [];
+  for (const item of q) {
+    try {
+      let res;
+      if (item.op === 'insert') res = await sb.from(item.table).insert(item.payload);
+      else if (item.op === 'upsert') res = await sb.from(item.table).upsert(item.payload, item.match?.onConflict ? {onConflict:item.match.onConflict} : undefined);
+      else if (item.op === 'update') {
+        let qy = sb.from(item.table).update(item.payload);
+        (item.match?.eq||[]).forEach(([k,v]) => qy = qy.eq(k,v));
+        res = await qy;
+      } else if (item.op === 'delete') {
+        let qy = sb.from(item.table).delete();
+        (item.match?.eq||[]).forEach(([k,v]) => qy = qy.eq(k,v));
+        res = await qy;
+      }
+      if (res.error) throw res.error;
+    } catch(e) { remaining.push(item); }
+  }
+  saveQueue(remaining);
+  syncInProgress = false; updateOfflineBadge();
+  if (remaining.length === 0) showToast('✅ All offline data synced', 'success');
+  else if (q.length) showToast(remaining.length + ' items still pending sync', 'error');
+}
+
+window.addEventListener('online', () => { isOnline = true; updateOfflineBadge(); showToast('Back online — syncing...', 'success'); flushOfflineQueue(); });
+window.addEventListener('offline', () => { isOnline = false; updateOfflineBadge(); showToast('No internet — working offline', 'error'); });
+
+setInterval(async () => {
+  if (!sb) return;
+  try {
+    const { error } = await sb.from('staff').select('id').limit(1);
+    const wasOffline = !isOnline;
+    isOnline = !error;
+    if (wasOffline && isOnline) { showToast('Back online — syncing...', 'success'); flushOfflineQueue(); }
+    updateOfflineBadge();
+  } catch(e) { isOnline = false; updateOfflineBadge(); }
+}, 20000);
+
 const BRANCHES = {
   MULTAN: { id:'MULTAN', name:'Multan', address:'Chowk Shah Abbas Soraj Kund Road, Near Jamia Rahimia, Pir Colony No. 1, Multan', phone:'923256032424',
     riders:["Bilal","Anas","Usama"],
@@ -1044,8 +1155,8 @@ const STAFF_PINS = { 'Admin':'1234', 'Manager':'5678', 'Cashier':'0000', 'Ali':'
 // Format: the QR URL is ?branch=MULTAN&table=A-1 → location stored as "A-1" or "A 1"
 const TABLES = {
   'Tables': ['T-1','T-2','T-3','T-4','A-1','A-2','A-3','A-4'],
-  'Takeaway': ['TK-1','TK-2','TK-3','TK-4','TK-5','TK-6','TK-7','TK-8','TK-9','TK-10'],
-  'Delivery': ['DEL-1','DEL-2','DEL-3','DEL-4','DEL-5','DEL-6','DEL-7','DEL-8']
+  'Takeaway': ['TK-1','TK-2','TK-3','TK-4','TK-5','TK-6','TK-7','TK-8','TK-9','TK-10','TK-11','TK-12','TK-13','TK-14','TK-15'],
+  'Delivery': ['DEL-1','DEL-2','DEL-3','DEL-4','DEL-5','DEL-6','DEL-7','DEL-8','DEL-9','DEL-10','DEL-11','DEL-12','DEL-13','DEL-14','DEL-15']
 };
 
 // All table IDs flat — for QR matching
@@ -1170,44 +1281,49 @@ async function doLogin() {
   if (!name) { showLoginErr('Enter your name'); return; }
   if (!pin)  { showLoginErr('Enter your PIN');  return; }
 
-  try {
-    const { data, error } = await sb.from('staff')
-      .select('*')
-      .eq('name', name)
-      .eq('pin', pin)
-      .eq('active', true)
-      .single();
+  let staffRecord = null;
 
-    if (error || !data) {
-      showLoginErr('Wrong name or PIN. Try again.');
-      return;
-    }
-
-    currentStaff = data.name;
-    currentStaffRole = data.role;
-    shiftStart = new Date();
-
-    await loadTodaySales();
-    document.getElementById('login-screen').style.display = 'none';
-    document.getElementById('pos-app').classList.add('active');
-    document.getElementById('bar-branch').textContent = activeBranch;
-    document.getElementById('bar-staff').textContent = currentStaff;
-    document.getElementById('opening-bal-input').value = openingBalance || '';
-    document.getElementById('bar-billno').textContent = String(billCounter).padStart(3,'0');
-    startClock();
-    startTableTimers();
-    startLiveReload();
-    switchView('tables');
-    applyPOSOverrides().then(() => {
-      fullRefresh();
-      renderMenu();
-      showToast('Welcome, ' + currentStaff + '! Shift started. 🔥', 'success');
-    });
-
-  } catch(e) {
-    showLoginErr('Connection error. Try again.');
-    console.error(e);
+  if (isOnline && sb) {
+    try {
+      const { data } = await sb.from('staff').select('*').eq('name', name).eq('pin', pin).eq('active', true).single();
+      if (data) {
+        staffRecord = data;
+        const { data: allStaff } = await sb.from('staff').select('*').eq('active', true);
+        if (allStaff) localStorage.setItem(STAFF_CACHE_KEY, JSON.stringify(allStaff));
+      }
+    } catch(e) {}
   }
+
+  if (!staffRecord) {
+    try {
+      const cached = JSON.parse(localStorage.getItem(STAFF_CACHE_KEY) || '[]');
+      staffRecord = cached.find(s => s.name === name && s.pin === pin && s.active);
+    } catch(e) {}
+  }
+
+  if (!staffRecord) { showLoginErr('Wrong name or PIN. Try again.'); return; }
+
+  currentStaff = staffRecord.name;
+  currentStaffRole = staffRecord.role;
+  shiftStart = new Date();
+
+  await loadTodaySales();
+  document.getElementById('login-screen').style.display = 'none';
+  document.getElementById('pos-app').classList.add('active');
+  document.getElementById('bar-branch').textContent = activeBranch;
+  document.getElementById('bar-staff').textContent = currentStaff;
+  document.getElementById('opening-bal-input').value = openingBalance || '';
+  document.getElementById('bar-billno').textContent = String(billCounter).padStart(3,'0');
+  startClock();
+  startTableTimers();
+  startLiveReload();
+  switchView('tables');
+  applyPOSOverrides().then(() => {
+    fullRefresh();
+    renderMenu();
+    showToast('Welcome, ' + currentStaff + '! Shift started. 🔥', 'success');
+  });
+  updateOfflineBadge();
 }
 
 function showLoginErr(msg) {
@@ -1235,31 +1351,27 @@ async function saveShiftReport() {
   const cashOuts = completedOrders.filter(o => o.method==='cash-out').reduce((s,o) => s+Math.abs(o.total), 0);
   const expected = openingBalance + totalCash - cashOuts;
 
-  try {
-    await sb.from('shift_reports').insert([{
-      branch: activeBranch,
-      date: todayKey(),
-      staff: currentStaff,
-      shift_start: shiftStart ? shiftStart.toISOString() : null,
-      shift_end: now.toISOString(),
-      opening_balance: openingBalance,
-      total_sales: total,
-      cash_sales: totalCash,
-      card_sales: totalCard,
-      sc_collected: scCollected,
-      discounts_given: discGiven,
-      voids_count: voids.length,
-      voids_amount: voidTotal,
-      returns_count: returns.length,
-      returns_amount: returnTotal,
-      bills_count: sales.length,
-      cash_outs: cashOuts,
-      expected_in_drawer: expected
-    }]);
-    console.log('Shift report saved ✅');
-  } catch(e) {
-    console.error('Shift report save error:', e);
-  }
+  await sbWrite('shift_reports', 'insert', [{
+    branch: activeBranch,
+    date: todayKey(),
+    staff: currentStaff,
+    shift_start: shiftStart ? shiftStart.toISOString() : null,
+    shift_end: now.toISOString(),
+    opening_balance: openingBalance,
+    total_sales: total,
+    cash_sales: totalCash,
+    card_sales: totalCard,
+    sc_collected: scCollected,
+    discounts_given: discGiven,
+    voids_count: voids.length,
+    voids_amount: voidTotal,
+    returns_count: returns.length,
+    returns_amount: returnTotal,
+    bills_count: sales.length,
+    cash_outs: cashOuts,
+    expected_in_drawer: expected
+  }]);
+  console.log('Shift report saved (or queued) ✅');
 }
 
 async function doLogout() {
@@ -1426,20 +1538,12 @@ async function _saveActiveTable(tname, orderData) {
   if (!sb) return;
   try {
     if (!orderData) {
-      await sb.from('active_tables').delete()
-        .eq('branch', activeBranch).eq('table_name', tname);
+      await sbWrite('active_tables', 'delete', null, { eq:[['branch',activeBranch],['table_name',tname]] });
     } else {
       const safe = JSON.parse(JSON.stringify(orderData));
-      const { data: existing } = await sb.from('active_tables')
-        .select('id').eq('branch', activeBranch).eq('table_name', tname).maybeSingle();
-      if (existing) {
-        await sb.from('active_tables')
-          .update({ order_data: safe, updated_at: new Date().toISOString() })
-          .eq('branch', activeBranch).eq('table_name', tname);
-      } else {
-        await sb.from('active_tables')
-          .insert([{ branch: activeBranch, table_name: tname, order_data: safe, updated_at: new Date().toISOString() }]);
-      }
+      await sbWrite('active_tables', 'upsert',
+        [{ branch: activeBranch, table_name: tname, order_data: safe, updated_at: new Date().toISOString() }],
+        { onConflict: 'branch,table_name' });
     }
   } catch(e) { console.warn('_saveActiveTable:', e.message); }
 }
@@ -2058,12 +2162,12 @@ async function createPosOrderRecord(tname, type) {
       source: 'POS'
     };
     
-    const { data, error } = await sb.from('kitchen_orders').insert([obj]).select();
-    if (!error && data && data[0]) {
-  currentOrder.id = data[0].id;
+    const res = await sbWrite('kitchen_orders', 'insert', [obj]);
+    if (res && res.data && res.data[0]) {
+  currentOrder.id = res.data[0].id;
   if (tableOrders[tname]) {
-    tableOrders[tname].id = data[0].id;
-    tableOrders[tname].webOrderId = data[0].id;
+    tableOrders[tname].id = res.data[0].id;
+    tableOrders[tname].webOrderId = res.data[0].id;
     _saveActiveTable(tname, tableOrders[tname]);
       }
     }
@@ -2628,26 +2732,22 @@ async function voidCurrentOrder() {
   const idToDelete = currentOrder.id;
   
   // Save to Supabase shift_transactions
-  if (sb) {
-    try {
-      await sb.from('shift_transactions').insert([{
-        branch: activeBranch,
-        date: todayKey(),
-        bill_no: 'VOID',
-        type: currentOrder.type,
-        table_loc: currentOrder.table || '',
-        items: currentOrder.items,
-        items_text: currentOrder.items.map(i => `${i.qty}x ${i.name}`).join(', '),
-        subtotal: food,
-        total: -food,
-        method: 'void',
-        staff: currentStaff,
-        customer_name: currentOrder.customerName || '',
-        return_reason: reason,
-        kitchen_order_id: idToDelete || null
-      }]);
-    } catch(e) { console.error('Void save error:', e); }
-  }
+  await sbWrite('shift_transactions', 'insert', [{
+    branch: activeBranch,
+    date: todayKey(),
+    bill_no: 'VOID',
+    type: currentOrder.type,
+    table_loc: currentOrder.table || '',
+    items: currentOrder.items,
+    items_text: currentOrder.items.map(i => `${i.qty}x ${i.name}`).join(', '),
+    subtotal: food,
+    total: -food,
+    method: 'void',
+    staff: currentStaff,
+    customer_name: currentOrder.customerName || '',
+    return_reason: reason,
+    kitchen_order_id: idToDelete || null
+  }]);
 
   if (tableToDelete) delete tableOrders[tableToDelete];
   if (tableToDelete) _saveActiveTable(tableToDelete, null);
@@ -2658,16 +2758,10 @@ async function voidCurrentOrder() {
 
   if (idToDelete && sb) {
     voidedOrderIds.add(idToDelete);
-    sb.from('kitchen_orders').update({
-      status: 'VOIDED',
-      voided_reason: reason,
-      voided_at: new Date().toISOString(),
-      voided_by: currentStaff
-    }).eq('id', idToDelete)
-      .then(({ error }) => {
-        if (error) console.error('Void DB error:', error);
-        else setTimeout(pollWebOrders, 1000);
-      });
+    sbWrite('kitchen_orders', 'update',
+      { status: 'VOIDED', voided_reason: reason, voided_at: new Date().toISOString(), voided_by: currentStaff },
+      { eq:[['id', idToDelete]] }
+    ).then(() => setTimeout(pollWebOrders, 1000));
   }
 }
 
@@ -2914,7 +3008,9 @@ async function sendToKitchen() {
     try {
       const updDelAddr = currentOrder.type==='Delivery'?(document.getElementById('delivery-address').value||currentOrder.deliveryAddress||''):'';
       const updDelCharge = currentOrder.type==='Delivery'?(parseFloat(document.getElementById('delivery-charge').value)||currentOrder.deliveryCharge||0):0;
-      await sb.from('kitchen_orders').update({ items:itemsText, subtotal:grand, delivery_fee:updDelCharge, location:updDelAddr||currentOrder.table||currentOrder.type, customer_name:custName||null, phone:custPhone||null, source:'POS' }).eq('id', currentOrder.id);
+      await sbWrite('kitchen_orders', 'update',
+        { items:itemsText, subtotal:grand, delivery_fee:updDelCharge, location:updDelAddr||currentOrder.table||currentOrder.type, customer_name:custName||null, phone:custPhone||null, source:'POS' },
+        { eq:[['id', currentOrder.id]] });
       saveTableOrder(); showToast('Kitchen updated! 🔥','success'); return;
     } catch(e) {}
   }
@@ -2928,11 +3024,8 @@ async function sendToKitchen() {
   }
   const obj = { type:currentOrder.type, location:location, items:itemsText, status:'WAITING', subtotal:grand, delivery_fee:delCharge, branch:activeBranch, customer_name:custName||null, phone:custPhone||null, source:'POS' };
   try {
-    if (sb) {
-      const { data, error } = await sb.from('kitchen_orders').insert([obj]).select();
-      if (error) throw error;
-      if (data && data[0]) { currentOrder.id = data[0].id; }
-    }
+    const res = await sbWrite('kitchen_orders', 'insert', [obj]);
+    if (res && res.data && res.data[0]) { currentOrder.id = res.data[0].id; }
     saveTableOrder(); showToast('Sent to kitchen! 🔥','success');
   } catch(e) { showToast('Kitchen send failed — saved locally','error'); console.error(e); }
 }
@@ -3043,26 +3136,22 @@ async function markTakeawayPaid() {
   _saveActiveTable(currentOrder.table, tableOrders[currentOrder.table]); // ← this line is missing
 }
   completedOrders.push(sale);
-  if (sb) {
-    try {
-      await sb.from('shift_transactions').insert([{
-        branch: activeBranch, date: todayKey(),
-        bill_no: sale.billNo, type: sale.type,
-        table_loc: sale.table || '',
-        items: sale.items,
-        items_text: sale.items.map(i => `${i.qty}x ${i.name}`).join(', '),
-        subtotal: grand, sc: 0, sc_pct: 0,
-        discount: sale.disc || 0, delivery_charge: 0,
-        total: sale.total, method: sale.method,
-        cash_received: 0, split_cash: 0, split_card: 0,
-        staff: currentStaff,
-        customer_name: sale.customerName || '',
-        customer_phone: sale.customerPhone || '',
-        delivery_address: '',
-        kitchen_order_id: currentOrder.id || null
-      }]);
-    } catch(e) { console.error('Takeaway save error:', e); }
-  }
+  await sbWrite('shift_transactions', 'insert', [{
+    branch: activeBranch, date: todayKey(),
+    bill_no: sale.billNo, type: sale.type,
+    table_loc: sale.table || '',
+    items: sale.items,
+    items_text: sale.items.map(i => `${i.qty}x ${i.name}`).join(', '),
+    subtotal: grand, sc: 0, sc_pct: 0,
+    discount: sale.disc || 0, delivery_charge: 0,
+    total: sale.total, method: sale.method,
+    cash_received: 0, split_cash: 0, split_card: 0,
+    staff: currentStaff,
+    customer_name: sale.customerName || '',
+    customer_phone: sale.customerPhone || '',
+    delivery_address: '',
+    kitchen_order_id: currentOrder.id || null
+  }]);
   // 🆕 Invalidate paid IDs cache so next poll sees fresh data
   _paidIdsCacheTime = 0;
   if (currentOrder.id) paidOrderIds.add(currentOrder.id);
@@ -3207,28 +3296,24 @@ async function completePayment() {
     };
  
     completedOrders.push(sale);
-    if (sb) {
-      try {
-        await sb.from('shift_transactions').insert([{
-          branch: activeBranch, date: todayKey(),
-          bill_no: sale.billNo, type: sale.type,
-          table_loc: sale.table || '',
-          items: sale.items,
-          items_text: sale.items.map(i => `${i.qty}x ${i.name}`).join(', '),
-          subtotal: sale.items.reduce((s,i) => s + i.price * i.qty, 0),
-          sc: sale.sc, sc_pct: sale.scPct, discount: sale.disc || 0,
-          delivery_charge: sale.deliveryCharge || 0,
-          total: sale.total, method: sale.method,
-          cash_received: sale.cashReceived || 0,
-          split_cash: sale.splitCash || 0, split_card: sale.splitCard || 0,
-          staff: currentStaff,
-          customer_name: sale.customerName || '',
-          customer_phone: sale.customerPhone || '',
-          delivery_address: sale.deliveryAddress || '',
-          kitchen_order_id: currentOrder.id || null
-        }]);
-      } catch(e) { console.error('Sale save error:', e); }
-    }
+    await sbWrite('shift_transactions', 'insert', [{
+      branch: activeBranch, date: todayKey(),
+      bill_no: sale.billNo, type: sale.type,
+      table_loc: sale.table || '',
+      items: sale.items,
+      items_text: sale.items.map(i => `${i.qty}x ${i.name}`).join(', '),
+      subtotal: sale.items.reduce((s,i) => s + i.price * i.qty, 0),
+      sc: sale.sc, sc_pct: sale.scPct, discount: sale.disc || 0,
+      delivery_charge: sale.deliveryCharge || 0,
+      total: sale.total, method: sale.method,
+      cash_received: sale.cashReceived || 0,
+      split_cash: sale.splitCash || 0, split_card: sale.splitCard || 0,
+      staff: currentStaff,
+      customer_name: sale.customerName || '',
+      customer_phone: sale.customerPhone || '',
+      delivery_address: sale.deliveryAddress || '',
+      kitchen_order_id: currentOrder.id || null
+    }]);
  
     _paidIdsCacheTime = 0;
     const cashPart = payMethod === 'cash' ? grand : payMethod === 'split' ? sale.splitCash : 0;
@@ -3515,10 +3600,7 @@ async function updateDeliveryStatus(orderId, status) {
       paymentMethod = mm[(mc||'').trim()] || 'cash';
     }
     const updateData = { status };
-    if (sb) {
-      const { error } = await sb.from('kitchen_orders').update(updateData).eq('id', orderId);
-      if (error) { showToast('Update failed', 'error'); return; }
-    }
+    await sbWrite('kitchen_orders', 'update', updateData, { eq:[['id', orderId]] });
     showToast(`Status → ${status} [${paymentMethod.toUpperCase()}]`, 'success');
 
     if (status === 'OUT' || status === 'PAID') {
@@ -3556,7 +3638,7 @@ sc: 0, disc: ko.discount || 0, scPct: 0, discType: 'flat', discAmount: ko.discou
                 kitchenOrderId: orderId
               };
               completedOrders.push(sale);
-              await sb.from('shift_transactions').insert([{
+              await sbWrite('shift_transactions', 'insert', [{
                 branch: activeBranch, date: todayKey(),
                 bill_no: billNo, type: 'Delivery',
                 table_loc: ko.location || '',
@@ -3660,16 +3742,9 @@ function showRiderAudit(riderName, orders) {
 async function setOpeningBalance() {
   const val = parseFloat(document.getElementById('opening-bal-input').value)||0;
   openingBalance = val;
-  if (sb) {
-    try {
-      await sb.from('opening_balance').upsert([{
-        branch: activeBranch,
-        date: todayKey(),
-        amount: val,
-        set_by: currentStaff
-      }], { onConflict: 'branch,date' });
-    } catch(e) { console.error('Opening balance save error:', e); }
-  }
+  await sbWrite('opening_balance', 'upsert',
+    [{ branch: activeBranch, date: todayKey(), amount: val, set_by: currentStaff }],
+    { onConflict: 'branch,date' });
 const _delFees = completedOrders.filter(o=>o.type==='Delivery').reduce((s,o)=>s+(o.deliveryCharge||0),0);
   cashInHand = openingBalance + completedOrders.filter(o=>o.method==='cash').reduce((s,o)=>s+o.total,0) + completedOrders.filter(o=>o.method==='split').reduce((s,o)=>s+(o.splitCash||0),0) - _delFees;
   document.getElementById('bar-cash').textContent = 'Rs '+cashInHand;
@@ -3681,16 +3756,12 @@ async function addCashIn() {
   if (!amt) return;
   const reason = prompt('Reason:') || 'Cash In';
   completedOrders.push({ billNo:'CI', table:'', type:'Cash In', items:[{name:reason,price:amt,qty:1,note:''}], total:amt, method:'cash-in', time:new Date(), staff:currentStaff, branch:activeBranch, sc:0, disc:0 });
-  if (sb) {
-    try {
-      await sb.from('shift_transactions').insert([{
-        branch: activeBranch, date: todayKey(),
-        bill_no: 'CI', type: 'Cash In', table_loc: '',
-        items_text: reason, subtotal: amt, total: amt,
-        method: 'cash-in', staff: currentStaff, return_reason: reason
-      }]);
-    } catch(e) { console.error('CashIn save error:', e); }
-  }
+  await sbWrite('shift_transactions', 'insert', [{
+    branch: activeBranch, date: todayKey(),
+    bill_no: 'CI', type: 'Cash In', table_loc: '',
+    items_text: reason, subtotal: amt, total: amt,
+    method: 'cash-in', staff: currentStaff, return_reason: reason
+  }]);
   cashInHand += amt;
   document.getElementById('bar-cash').textContent = 'Rs '+cashInHand;
   saveTodaySales(); renderCashView(); showToast('Cash In: Rs '+amt,'success');
@@ -3701,16 +3772,12 @@ async function addCashOut() {
   if (!amt) return;
   const reason = prompt('Reason:') || 'Cash Out';
   completedOrders.push({ billNo:'CO', table:'', type:'Cash Out', items:[{name:reason,price:amt,qty:1,note:''}], total:-amt, method:'cash-out', time:new Date(), staff:currentStaff, branch:activeBranch, sc:0, disc:0 });
-  if (sb) {
-    try {
-      await sb.from('shift_transactions').insert([{
-        branch: activeBranch, date: todayKey(),
-        bill_no: 'CO', type: 'Cash Out', table_loc: '',
-        items_text: reason, subtotal: amt, total: -amt,
-        method: 'cash-out', staff: currentStaff, return_reason: reason
-      }]);
-    } catch(e) { console.error('CashOut save error:', e); }
-  }
+  await sbWrite('shift_transactions', 'insert', [{
+    branch: activeBranch, date: todayKey(),
+    bill_no: 'CO', type: 'Cash Out', table_loc: '',
+    items_text: reason, subtotal: amt, total: -amt,
+    method: 'cash-out', staff: currentStaff, return_reason: reason
+  }]);
   cashInHand -= amt;
   document.getElementById('bar-cash').textContent = 'Rs '+cashInHand;
   saveTodaySales(); renderCashView(); showToast('Cash Out: Rs '+amt,'error');
