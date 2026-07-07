@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -579,6 +580,9 @@ tr:hover td{background:#fafafa;}
     <button class="nav-btn" data-tab="t-ingredients" onclick="switchTab(this)">
       <i class="fas fa-boxes"></i> Ingredients
     </button>
+    <button class="nav-btn" data-tab="t-batches" onclick="switchTab(this)">
+  <i class="fas fa-blender"></i> Batches
+</button>
     <button class="nav-btn" data-tab="t-grn" onclick="switchTab(this)">
       <i class="fas fa-truck-loading"></i> GRN
     </button>
@@ -594,6 +598,23 @@ tr:hover td{background:#fafafa;}
 
 <!-- MAIN -->
 <main class="main">
+    <div id="t-batches" class="tab">
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title"><i class="fas fa-blender"></i> Batch Recipes</span>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <select class="form-select" id="batch-type-filter" onchange="renderBatches()" style="max-width:160px;">
+          <option value="">All Types</option>
+          <option value="dough">Dough</option>
+          <option value="sauce">Sauce</option>
+          <option value="other">Other</option>
+        </select>
+        <button class="btn btn-primary btn-sm" onclick="openBatchModal()"><i class="fas fa-plus"></i> New Batch</button>
+      </div>
+    </div>
+    <div id="batch-list"><div class="empty"><i class="fas fa-blender"></i><p>No batch recipes yet</p></div></div>
+  </div>
+</div>
 
 <!-- ══════════════════════════════════════
      DASHBOARD
@@ -1003,6 +1024,56 @@ tr:hover td{background:#fafafa;}
   </div>
 </div>
 
+<div class="overlay" id="m-batch">
+  <div class="modal modal-lg">
+    <div class="modal-head">
+      <span class="modal-title" id="batch-modal-title">New Batch</span>
+      <button class="modal-close" onclick="closeM('m-batch')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="batch-edit-id">
+      <div class="form-row" style="margin-bottom:14px;">
+        <div class="form-group" style="margin:0;">
+          <label class="form-label">Batch Name *</label>
+          <input class="form-input" id="batch-name" placeholder="e.g. Dough Batch">
+        </div>
+        <div class="form-group" style="margin:0;">
+          <label class="form-label">Batch Type *</label>
+          <select class="form-select" id="batch-type-inp">
+            <option value="dough">Dough</option>
+            <option value="sauce">Sauce</option>
+            <option value="other">Other</option>
+          </select>
+        </div>
+      </div>
+
+      <div style="margin:16px 0 10px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <strong style="font-size:13px;">Materials</strong>
+          <button class="btn btn-outline btn-sm" onclick="addBatchRow()"><i class="fas fa-plus"></i> Add Row</button>
+        </div>
+        <div style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr 1fr auto;gap:6px;padding:8px;background:#f8f9fb;border-radius:8px;font-size:10px;font-weight:700;color:var(--mid);text-transform:uppercase;">
+          <div>Material</div><div>UOM</div><div>Price</div><div>Portion</div><div>Cost</div><div></div>
+        </div>
+        <div id="batch-rows" style="max-height:320px;overflow-y:auto;"></div>
+      </div>
+
+      <div style="background:#f0fdf4;border-radius:10px;padding:14px;border:2px solid #d1fae5;display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;text-align:center;">
+        <div><div style="font-size:11px;color:var(--mid);">Total Price</div><div id="batch-total-price" style="font-weight:800;font-size:16px;">Rs 0.00</div></div>
+        <div><div style="font-size:11px;color:var(--mid);">Total Portion</div><div id="batch-total-portion" style="font-weight:800;font-size:16px;">0.000</div></div>
+        <div><div style="font-size:11px;color:var(--mid);">Total Cost</div><div id="batch-total-cost" style="font-weight:800;font-size:16px;color:var(--success);">Rs 0.00</div></div>
+      </div>
+      <div style="text-align:right;margin-top:10px;font-weight:800;font-size:18px;color:var(--success);">
+        Per Kg: <span id="batch-per-kg">Rs 0.00</span>
+      </div>
+
+      <button class="btn btn-primary" style="width:100%;margin-top:14px;" onclick="saveBatch()">
+        <i class="fas fa-save"></i> Save Batch
+      </button>
+    </div>
+  </div>
+</div>
+
 <!-- MANUAL CLOSING -->
 <div class="overlay" id="m-closing">
   <div class="modal modal-lg">
@@ -1184,6 +1255,7 @@ tr:hover td{background:#fafafa;}
           <label><input type="checkbox" id="nu-perm-closing" checked> Night Closing</label>
           <label><input type="checkbox" id="nu-perm-consumption" checked> Consumption</label>
           <label><input type="checkbox" id="nu-perm-manageusers"> Manage Users</label>
+          <label><input type="checkbox" id="nu-perm-batches" checked> Batches</label>
         </div>
       </div>
       <button class="btn btn-primary" style="width:100%;margin-bottom:20px;" onclick="createUser()">
@@ -1278,9 +1350,34 @@ create table if not exists closing_items (
   consumptioncost numeric default 0
 );
 
+-- 6. BATCHES (recipe headers)
+create table if not exists batches (
+  id           text primary key,
+  name         text not null,
+  type         text not null default 'other',
+  totalprice   numeric default 0,
+  totalportion numeric default 0,
+  totalcost    numeric default 0,
+  perkgcost    numeric default 0,
+  createdat    timestamptz default now()
+);
+
+-- 7. BATCH ITEMS
+create table if not exists batch_items (
+  id            text primary key,
+  batch_id      text references batches(id) on delete cascade,
+  ingredient_id text references ingredients(id),
+  itemname      text not null,
+  unit          text not null,
+  price         numeric default 0,
+  portion       numeric default 0,
+  cost          numeric default 0
+);
+
 -- Enable Realtime (optional)
 alter publication supabase_realtime add table ingredients;
 alter publication supabase_realtime add table grn;
+alter publication supabase_realtime add table batches;
 alter publication supabase_realtime add table closing;</pre>
     </div>
   </div>
@@ -1300,7 +1397,7 @@ const SB_KEY  = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsIn
 // STATE
 // ─────────────────────────────────────────────
 let sb = null;
-let DB = { ingredients: [], grn: [], grnItems: [], closing: [], closingItems: [] };
+let DB = { ingredients: [], grn: [], grnItems: [], closing: [], closingItems: [], batches: [], batchItems: [] };
 
 // ─────────────────────────────────────────────
 // BUSINESS DAY HELPER
@@ -1387,6 +1484,7 @@ function switchTab(btn) {
   if (tab === 't-grn')         { renderGRN(); }
   if (tab === 't-closing')     { renderClosingHistory(); }
   if (tab === 't-consumption') { renderConsumption(); }
+  if (tab === 't-batches')     { renderBatches(); }
 }
 
 async function init() {
@@ -1414,19 +1512,25 @@ async function loadAll() {
     { data: grns },
     { data: gItems },
     { data: cls },
-    { data: cItems }
+    { data: cItems },
+    { data: batches },
+    { data: bItems }
   ] = await Promise.all([
     sb.from('ingredients').select('*').order('name'),
     sb.from('grn').select('*').order('bizday', {ascending:false}),
     sb.from('grn_items').select('*'),
     sb.from('closing').select('*').order('bizday', {ascending:false}),
-    sb.from('closing_items').select('*')
+    sb.from('closing_items').select('*'),
+    sb.from('batches').select('*').order('createdat', {ascending:false}),
+    sb.from('batch_items').select('*')
   ]);
   DB.ingredients   = ings   || [];
   DB.grn           = grns   || [];
   DB.grnItems      = gItems || [];
   DB.closing       = cls    || [];
   DB.closingItems  = cItems || [];
+  DB.batches       = batches || [];
+  DB.batchItems    = bItems  || [];
   setSyncStatus('ok', `Synced · ${DB.ingredients.length} items`);
   populateCategoryFilter();
 }
@@ -1853,6 +1957,191 @@ function renderGRN() {
       '<tbody>' + tableRows + '</tbody></table></div>' +
       (grn.notes ? '<div style="margin-top:10px;padding:10px;background:#fffbeb;border-radius:8px;font-size:12px;">' + grn.notes + '</div>' : '') +
     '</div>';
+  }).join('');
+}
+
+// ── BATCHES ──
+async function loadBatches() {
+  const [{ data: batches }, { data: bItems }] = await Promise.all([
+    sb.from('batches').select('*').order('createdat', {ascending:false}),
+    sb.from('batch_items').select('*')
+  ]);
+  DB.batches = batches || [];
+  DB.batchItems = bItems || [];
+}
+// call loadBatches() inside loadAll(), alongside the other Promise.all loads
+
+function openBatchModal() {
+  document.getElementById('batch-modal-title').textContent = 'New Batch';
+  document.getElementById('batch-edit-id').value = '';
+  document.getElementById('batch-name').value = '';
+  document.getElementById('batch-type-inp').value = 'dough';
+  document.getElementById('batch-rows').innerHTML = '';
+  addBatchRow();
+  updateBatchTotals();
+  openM('m-batch');
+}
+
+function addBatchRow(data) {
+  const opts = DB.ingredients.map(i =>
+    `<option value="${i.id}" data-unit="${i.unit}" data-cost="${i.costperunit}"${data && data.ingId===i.id?' selected':''}>${i.name} (${i.unit})</option>`
+  ).join('');
+  const row = document.createElement('div');
+  row.style.cssText = 'display:grid;grid-template-columns:2fr 1fr 1fr 1fr 1fr auto;gap:6px;margin-top:6px;align-items:center;';
+  row.innerHTML = `
+    <select class="form-select batch-sel" onchange="batchRowChange(this)" style="font-size:12px;">
+      <option value="">Select material</option>${opts}
+    </select>
+    <input class="form-input batch-uom" type="text" readonly style="font-size:12px;background:#f3f4f6;" value="${data?.unit||''}">
+    <input class="form-input batch-price" type="number" step="0.01" oninput="updateBatchRowCost(this)" style="font-size:12px;text-align:right;" value="${data?.price||''}">
+    <input class="form-input batch-portion" type="number" step="0.001" oninput="updateBatchRowCost(this)" style="font-size:12px;text-align:right;" value="${data?.portion||''}">
+    <div class="batch-line" style="font-weight:700;font-size:13px;text-align:right;">${fmtCurrency(data?.cost||0)}</div>
+    <button class="btn btn-icon" style="background:#fee2e2;color:#991b1b;" onclick="removeBatchRow(this)"><i class="fas fa-trash"></i></button>
+  `;
+  document.getElementById('batch-rows').appendChild(row);
+}
+
+function batchRowChange(sel) {
+  const ing = DB.ingredients.find(i => i.id === sel.value);
+  const row = sel.closest('div');
+  if (ing) {
+    row.querySelector('.batch-uom').value = ing.unit;
+    row.querySelector('.batch-price').value = ing.costperunit;
+  }
+  updateBatchRowCost(row.querySelector('.batch-portion'));
+}
+
+function updateBatchRowCost(inp) {
+  const row = inp.closest('div');
+  const price = safe(row.querySelector('.batch-price').value);
+  const portion = safe(row.querySelector('.batch-portion').value);
+  row.querySelector('.batch-line').textContent = fmtCurrency(price * portion);
+  updateBatchTotals();
+}
+
+function removeBatchRow(btn) {
+  const rows = document.querySelectorAll('#batch-rows > div');
+  if (rows.length <= 1) { toast('Need at least one row','err'); return; }
+  btn.closest('div').remove();
+  updateBatchTotals();
+}
+
+function updateBatchTotals() {
+  let totalPrice = 0, totalPortion = 0, totalCost = 0;
+  document.querySelectorAll('#batch-rows > div').forEach(row => {
+    totalPrice   += safe(row.querySelector('.batch-price').value);
+    totalPortion += safe(row.querySelector('.batch-portion').value);
+    totalCost    += safe(row.querySelector('.batch-price').value) * safe(row.querySelector('.batch-portion').value);
+  });
+  document.getElementById('batch-total-price').textContent   = fmtCurrency(totalPrice);
+  document.getElementById('batch-total-portion').textContent = totalPortion.toFixed(3);
+  document.getElementById('batch-total-cost').textContent    = fmtCurrency(totalCost);
+  document.getElementById('batch-per-kg').textContent = fmtCurrency(totalPortion > 0 ? totalCost / totalPortion : 0);
+}
+
+async function saveBatch() {
+  const name = document.getElementById('batch-name').value.trim();
+  const type = document.getElementById('batch-type-inp').value;
+  if (!name) { toast('Batch name required','err'); return; }
+
+  const rows = document.querySelectorAll('#batch-rows > div');
+  const items = [];
+  rows.forEach(row => {
+    const ingId = row.querySelector('.batch-sel').value;
+    const ing = DB.ingredients.find(i => i.id === ingId);
+    const price = safe(row.querySelector('.batch-price').value);
+    const portion = safe(row.querySelector('.batch-portion').value);
+    if (!ing || portion <= 0) return;
+    items.push({ ingId, name: ing.name, unit: ing.unit, price, portion, cost: price*portion });
+  });
+  if (!items.length) { toast('Add at least one material','err'); return; }
+
+  const totalPrice = items.reduce((s,i)=>s+i.price,0);
+  const totalPortion = items.reduce((s,i)=>s+i.portion,0);
+  const totalCost = items.reduce((s,i)=>s+i.cost,0);
+  const perKg = totalPortion > 0 ? totalCost/totalPortion : 0;
+
+  const editId = document.getElementById('batch-edit-id').value;
+  const batchId = editId || uid();
+
+  setSyncStatus('busy','Saving batch…');
+
+  if (editId) {
+    await sb.from('batch_items').delete().eq('batch_id', editId);
+    await sb.from('batches').update({ name, type, totalprice:totalPrice, totalportion:totalPortion, totalcost:totalCost, perkgcost:perKg }).eq('id', editId);
+  } else {
+    await sb.from('batches').insert({ id: batchId, name, type, totalprice:totalPrice, totalportion:totalPortion, totalcost:totalCost, perkgcost:perKg, createdat: new Date().toISOString() });
+  }
+
+  const itemRows = items.map(i => ({
+    id: uid(), batch_id: batchId, ingredient_id: i.ingId,
+    itemname: i.name, unit: i.unit, price: i.price, portion: i.portion, cost: i.cost
+  }));
+  await sb.from('batch_items').insert(itemRows);
+
+  DB.batches = DB.batches.filter(b=>b.id!==batchId);
+  DB.batches.unshift({ id:batchId, name, type, totalprice:totalPrice, totalportion:totalPortion, totalcost:totalCost, perkgcost:perKg });
+  DB.batchItems = DB.batchItems.filter(i=>i.batch_id!==batchId);
+  DB.batchItems.push(...itemRows);
+
+  closeM('m-batch');
+  renderBatches();
+  setSyncStatus('ok','Synced');
+  toast('✅ Batch saved');
+}
+
+function editBatch(id) {
+  const batch = DB.batches.find(b=>b.id===id);
+  if (!batch) return;
+  const items = DB.batchItems.filter(i=>i.batch_id===id);
+  document.getElementById('batch-modal-title').textContent = 'Edit Batch';
+  document.getElementById('batch-edit-id').value = batch.id;
+  document.getElementById('batch-name').value = batch.name;
+  document.getElementById('batch-type-inp').value = batch.type;
+  document.getElementById('batch-rows').innerHTML = '';
+  items.forEach(item => addBatchRow({ ingId:item.ingredient_id, unit:item.unit, price:item.price, portion:item.portion, cost:item.cost }));
+  updateBatchTotals();
+  openM('m-batch');
+}
+
+async function deleteBatch(id) {
+  if (!confirm('Delete this batch recipe?')) return;
+  await sb.from('batches').delete().eq('id',id);
+  DB.batches = DB.batches.filter(b=>b.id!==id);
+  DB.batchItems = DB.batchItems.filter(i=>i.batch_id!==id);
+  renderBatches();
+  toast('Batch deleted');
+}
+
+function renderBatches() {
+  const typeFilter = document.getElementById('batch-type-filter')?.value || '';
+  let list = DB.batches;
+  if (typeFilter) list = list.filter(b=>b.type===typeFilter);
+
+  const cont = document.getElementById('batch-list');
+  if (!list.length) { cont.innerHTML = '<div class="empty"><i class="fas fa-blender"></i><p>No batch recipes found</p></div>'; return; }
+
+  cont.innerHTML = list.map(batch => {
+    const items = DB.batchItems.filter(i=>i.batch_id===batch.id);
+    return `<div class="grn-card">
+      <div class="grn-card-head">
+        <div>
+          <span class="badge badge-info">${batch.type}</span>
+          <div style="font-weight:700;font-size:16px;margin-top:5px;">${batch.name}</div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-family:'Plus Jakarta Sans',sans-serif;font-size:20px;font-weight:800;color:var(--success);">${fmtCurrency(batch.perkgcost)} <span style="font-size:11px;font-weight:600;color:var(--mid);">/kg</span></div>
+          <div style="display:flex;gap:6px;margin-top:8px;justify-content:flex-end;">
+            <button class="btn btn-sm" style="background:#dbeafe;color:#1e40af;" onclick="editBatch('${batch.id}')"><i class="fas fa-edit"></i> Edit</button>
+            <button class="btn btn-sm btn-danger" onclick="deleteBatch('${batch.id}')"><i class="fas fa-trash"></i></button>
+          </div>
+        </div>
+      </div>
+      <div class="tbl-wrap"><table>
+        <thead><tr><th>Material</th><th>UOM</th><th>Price</th><th>Portion</th><th>Cost</th></tr></thead>
+        <tbody>${items.map(i=>`<tr><td>${i.itemname}</td><td><span class="unit-pill">${i.unit}</span></td><td>${fmtCurrency(i.price)}</td><td>${fmtNum(i.portion,3)}</td><td style="font-weight:700;">${fmtCurrency(i.cost)}</td></tr>`).join('')}</tbody>
+      </table></div>
+    </div>`;
   }).join('');
 }
 
@@ -3382,10 +3671,20 @@ function applyRolePermissions() {
 
   document.getElementById('btn-manage-users').style.display = perms['manage_users'] ? 'inline-flex' : 'none';
 
+  let firstAllowedBtn = null;
   document.querySelectorAll('.nav-btn').forEach(btn => {
     const tab = btn.dataset.tab;
-    btn.style.display = perms[tab] === false ? 'none' : '';
+    const allowed = perms[tab] !== false;
+    btn.style.display = allowed ? '' : 'none';
+    if (allowed && !firstAllowedBtn) firstAllowedBtn = btn;
   });
+
+  // If the currently active tab (e.g. default Dashboard) isn't permitted, switch to the first allowed tab
+  const activeBtn = document.querySelector('.nav-btn.active');
+  const activeTab = activeBtn?.dataset.tab;
+  if (activeTab && perms[activeTab] === false && firstAllowedBtn) {
+    switchTab(firstAllowedBtn);
+  }
 }
 
 // ── USER MANAGEMENT (admin only) ──
@@ -3428,6 +3727,7 @@ async function renderUsers() {
           <label><input type="checkbox" id="perm_${u.id}_t-closing" ${p['t-closing']?'checked':''}> Night Closing</label>
           <label><input type="checkbox" id="perm_${u.id}_t-consumption" ${p['t-consumption']?'checked':''}> Consumption</label>
           <label><input type="checkbox" id="perm_${u.id}_manage_users" ${p['manage_users']?'checked':''}> Manage Users</label>
+          <label><input type="checkbox" id="perm_${u.id}_t-batches" ${p['t-batches']?'checked':''}> Batches</label>
         </div>
         <button class="btn btn-sm btn-purple" onclick="saveUserPermissions('${u.id}')"><i class="fas fa-save"></i> Save Access</button>
       </td>
@@ -3447,7 +3747,8 @@ async function saveUserPermissions(id) {
     't-grn':         document.getElementById(`perm_${id}_t-grn`).checked,
     't-closing':     document.getElementById(`perm_${id}_t-closing`).checked,
     't-consumption': document.getElementById(`perm_${id}_t-consumption`).checked,
-    'manage_users':  document.getElementById(`perm_${id}_manage_users`).checked
+    'manage_users':  document.getElementById(`perm_${id}_manage_users`).checked,
+    't-batches':     document.getElementById(`perm_${id}_t-batches`).checked,
   };
   const { error } = await sb.from('app_users').update({ permissions }).eq('id', id);
   if (error) { toast('❌ ' + error.message, 'err'); return; }
@@ -3467,7 +3768,8 @@ async function createUser() {
     't-grn':         document.getElementById('nu-perm-grn').checked,
     't-closing':     document.getElementById('nu-perm-closing').checked,
     't-consumption': document.getElementById('nu-perm-consumption').checked,
-    'manage_users':  document.getElementById('nu-perm-manageusers').checked
+    'manage_users':  document.getElementById('nu-perm-manageusers').checked,
+    't-batches':     document.getElementById('nu-perm-batches').checked
   };
 
   const { error } = await sb.from('app_users').insert({
