@@ -1046,6 +1046,22 @@ tr:hover td{background:#fafafa;}
         </div>
       </div>
 
+      <div class="form-row" style="margin-bottom:14px;">
+        <div class="form-group" style="margin:0;">
+          <label class="form-label">Output Ingredient * <span style="font-weight:400;color:var(--mid);">(what this batch produces)</span></label>
+          <select class="form-select" id="batch-output-ingredient">
+            <option value="">— Select ingredient —</option>
+          </select>
+        </div>
+        <div class="form-group" style="margin:0;">
+          <label class="form-label">Yield per Batch *</label>
+          <input class="form-input" id="batch-output-qty" type="number" step="0.001" placeholder="e.g. 5 (kg)">
+        </div>
+      </div>
+      <div style="background:#eff6ff;border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:12px;color:#1e40af;">
+        💡 Create an ingredient like "Fresh Dough" or "Pizza Sauce" first (category: General, unit: kg) if it doesn't exist yet — that's what gets stocked and drawn down when pizzas sell.
+      </div>
+
       <div style="margin:16px 0 10px;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
           <strong style="font-size:13px;">Materials</strong>
@@ -1970,11 +1986,19 @@ async function loadBatches() {
 }
 // call loadBatches() inside loadAll(), alongside the other Promise.all loads
 
+function populateBatchOutputSelect(selectedId) {
+  const sel = document.getElementById('batch-output-ingredient');
+  sel.innerHTML = '<option value="">— Select ingredient —</option>' +
+    DB.ingredients.map(i=>`<option value="${i.id}" ${i.id===selectedId?'selected':''}>${i.name} (${i.unit})</option>`).join('');
+}
+
 function openBatchModal() {
   document.getElementById('batch-modal-title').textContent = 'New Batch';
   document.getElementById('batch-edit-id').value = '';
   document.getElementById('batch-name').value = '';
   document.getElementById('batch-type-inp').value = 'dough';
+  document.getElementById('batch-output-qty').value = '';
+  populateBatchOutputSelect('');
   document.getElementById('batch-rows').innerHTML = '';
   addBatchRow();
   updateBatchTotals();
@@ -2041,7 +2065,11 @@ function updateBatchTotals() {
 async function saveBatch() {
   const name = document.getElementById('batch-name').value.trim();
   const type = document.getElementById('batch-type-inp').value;
+  const outputIngId = document.getElementById('batch-output-ingredient').value;
+  const outputQty = safe(document.getElementById('batch-output-qty').value);
   if (!name) { toast('Batch name required','err'); return; }
+  if (!outputIngId) { toast('Select an output ingredient','err'); return; }
+  if (outputQty <= 0) { toast('Enter a yield quantity greater than 0','err'); return; }
 
   const rows = document.querySelectorAll('#batch-rows > div');
   const items = [];
@@ -2065,11 +2093,13 @@ async function saveBatch() {
 
   setSyncStatus('busy','Saving batch…');
 
+  const batchRow = { name, type, totalprice:totalPrice, totalportion:totalPortion, totalcost:totalCost, perkgcost:perKg, output_ingredient_id: outputIngId, outputqty: outputQty };
+
   if (editId) {
     await sb.from('batch_items').delete().eq('batch_id', editId);
-    await sb.from('batches').update({ name, type, totalprice:totalPrice, totalportion:totalPortion, totalcost:totalCost, perkgcost:perKg }).eq('id', editId);
+    await sb.from('batches').update(batchRow).eq('id', editId);
   } else {
-    await sb.from('batches').insert({ id: batchId, name, type, totalprice:totalPrice, totalportion:totalPortion, totalcost:totalCost, perkgcost:perKg, createdat: new Date().toISOString() });
+    await sb.from('batches').insert({ id: batchId, ...batchRow, createdat: new Date().toISOString() });
   }
 
   const itemRows = items.map(i => ({
@@ -2079,7 +2109,7 @@ async function saveBatch() {
   await sb.from('batch_items').insert(itemRows);
 
   DB.batches = DB.batches.filter(b=>b.id!==batchId);
-  DB.batches.unshift({ id:batchId, name, type, totalprice:totalPrice, totalportion:totalPortion, totalcost:totalCost, perkgcost:perKg });
+  DB.batches.unshift({ id:batchId, ...batchRow });
   DB.batchItems = DB.batchItems.filter(i=>i.batch_id!==batchId);
   DB.batchItems.push(...itemRows);
 
@@ -2097,6 +2127,8 @@ function editBatch(id) {
   document.getElementById('batch-edit-id').value = batch.id;
   document.getElementById('batch-name').value = batch.name;
   document.getElementById('batch-type-inp').value = batch.type;
+  document.getElementById('batch-output-qty').value = batch.outputqty || '';
+  populateBatchOutputSelect(batch.output_ingredient_id || '');
   document.getElementById('batch-rows').innerHTML = '';
   items.forEach(item => addBatchRow({ ingId:item.ingredient_id, unit:item.unit, price:item.price, portion:item.portion, cost:item.cost }));
   updateBatchTotals();
@@ -2122,15 +2154,22 @@ function renderBatches() {
 
   cont.innerHTML = list.map(batch => {
     const items = DB.batchItems.filter(i=>i.batch_id===batch.id);
+    const outputIng = DB.ingredients.find(i=>i.id===batch.output_ingredient_id);
     return `<div class="grn-card">
       <div class="grn-card-head">
         <div>
           <span class="badge badge-info">${batch.type}</span>
           <div style="font-weight:700;font-size:16px;margin-top:5px;">${batch.name}</div>
+          <div style="font-size:12px;color:var(--mid);margin-top:3px;">
+            Produces: <strong>${outputIng ? outputIng.name : '⚠️ not linked'}</strong>
+            ${batch.outputqty ? ` · Yield: ${fmtNum(batch.outputqty,3)} ${outputIng?.unit||''}/batch` : ''}
+            ${outputIng ? ` · Current stock: ${fmtNum(outputIng.currentstock,3)} ${outputIng.unit}` : ''}
+          </div>
         </div>
         <div style="text-align:right;">
           <div style="font-family:'Plus Jakarta Sans',sans-serif;font-size:20px;font-weight:800;color:var(--success);">${fmtCurrency(batch.perkgcost)} <span style="font-size:11px;font-weight:600;color:var(--mid);">/kg</span></div>
           <div style="display:flex;gap:6px;margin-top:8px;justify-content:flex-end;">
+            <button class="btn btn-sm btn-success" onclick="produceBatch('${batch.id}')"><i class="fas fa-industry"></i> Produce</button>
             <button class="btn btn-sm" style="background:#dbeafe;color:#1e40af;" onclick="editBatch('${batch.id}')"><i class="fas fa-edit"></i> Edit</button>
             <button class="btn btn-sm btn-danger" onclick="deleteBatch('${batch.id}')"><i class="fas fa-trash"></i></button>
           </div>
@@ -2142,6 +2181,53 @@ function renderBatches() {
       </table></div>
     </div>`;
   }).join('');
+}
+
+async function produceBatch(batchId) {
+  const batch = DB.batches.find(b=>b.id===batchId);
+  if (!batch) return;
+  if (!batch.output_ingredient_id) { toast('This batch has no output ingredient linked — edit it first','err'); return; }
+  const items = DB.batchItems.filter(i=>i.batch_id===batchId);
+  if (!items.length) { toast('This batch has no materials','err'); return; }
+
+  const defaultYield = batch.outputqty || batch.totalportion || 0;
+  const outputIng = DB.ingredients.find(i=>i.id===batch.output_ingredient_id);
+  const input = prompt(`How much ${outputIng?.name||'output'} are you producing? (default recipe = ${fmtNum(defaultYield,3)})`, defaultYield);
+  if (input === null) return;
+  const producedQty = safe(input);
+  if (producedQty <= 0) { toast('Enter a quantity greater than 0','err'); return; }
+
+  const ratio = defaultYield > 0 ? producedQty / defaultYield : 1;
+
+  for (const item of items) {
+    const ing = DB.ingredients.find(i=>i.id===item.ingredient_id);
+    const needed = safe(item.portion) * ratio;
+    if (ing && safe(ing.currentstock) < needed) {
+      if (!confirm(`⚠️ ${ing.name} stock is only ${fmtNum(ing.currentstock,3)} ${ing.unit}, but this batch needs ${fmtNum(needed,3)} ${ing.unit}. Continue anyway?`)) return;
+      break;
+    }
+  }
+
+  setSyncStatus('busy','Producing batch…');
+
+  for (const item of items) {
+    const ing = DB.ingredients.find(i=>i.id===item.ingredient_id);
+    if (!ing) continue;
+    const needed = safe(item.portion) * ratio;
+    ing.currentstock = Math.max(0, safe(ing.currentstock) - needed);
+    await sb.from('ingredients').update({ currentstock: ing.currentstock, updatedat: new Date().toISOString() }).eq('id', ing.id);
+  }
+
+  if (outputIng) {
+    outputIng.currentstock = safe(outputIng.currentstock) + producedQty;
+    await sb.from('ingredients').update({ currentstock: outputIng.currentstock, updatedat: new Date().toISOString() }).eq('id', outputIng.id);
+  }
+
+  renderBatches();
+  renderIngredients();
+  renderDashboard();
+  setSyncStatus('ok','Synced');
+  toast(`✅ Produced ${fmtNum(producedQty,3)} ${outputIng?.unit||''} of ${outputIng?.name||'output'}`);
 }
 
 async function deleteGRN(id) {
