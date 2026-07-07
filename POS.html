@@ -400,10 +400,6 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
   <div class="login-box">
     <div class="login-logo">CRUSTI<span>FY</span></div>
     <div class="login-sub">Point of Sale System v2</div>
-    <div class="login-branch-row">
-      <button class="branch-pick active" onclick="selectBranch('MULTAN',this)">🍕 Multan</button>
-      <button class="branch-pick" onclick="selectBranch('BWP',this)">🥩 BWP</button>
-    </div>
     <input class="login-input" type="text" id="staff-name" placeholder="Staff Name" autocomplete="off">
     <input class="login-input" type="password" id="staff-pin" placeholder="PIN" maxlength="6" autocomplete="off"
            onkeydown="if(event.key==='Enter')doLogin()">
