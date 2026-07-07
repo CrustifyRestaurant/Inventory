@@ -1400,6 +1400,32 @@ function todayKey() {
   const pkTime = new Date(now.getTime() + (5 * 60 * 60 * 1000));
   return pkTime.toISOString().slice(0, 10);
 }
+async function deductInventoryForSale(sale) {
+  if (!sb) return;
+  try {
+    const { data: recipes } = await sb.from('item_recipes').select('*').eq('branch', activeBranch);
+    const recipeMap = {};
+    (recipes||[]).forEach(r => recipeMap[r.item_name] = r.ingredients);
+    const bizday = todayKey();
+    for (const item of sale.items) {
+      if (item.returned) continue;
+      const recipe = recipeMap[item.name];
+      if (!recipe) continue;
+      for (const ing of recipe) {
+        if (!ing.ingredient_id) continue;
+        const useQty = ing.qty * item.qty;
+        const { data: cur } = await sb.from('ingredients').select('currentstock').eq('id', ing.ingredient_id).single();
+        const newStock = Math.max(0, (cur?.currentstock||0) - useQty);
+        await sb.from('ingredients').update({ currentstock: newStock, updatedat: new Date().toISOString() }).eq('id', ing.ingredient_id);
+        await sb.from('pos_consumption').insert([{
+          id: Date.now()+'-'+Math.random().toString(36).slice(2),
+          branch: activeBranch, bizday, ingredient_id: ing.ingredient_id,
+          itemname: ing.name, qty: useQty, unit: ing.unit
+        }]);
+      }
+    }
+  } catch(e) { console.error('deductInventoryForSale', e); }
+}
 // ══════════════════════════════════
 // CLOCK & LIVE RELOAD
 // ══════════════════════════════════
@@ -3136,6 +3162,7 @@ async function markTakeawayPaid() {
   _saveActiveTable(currentOrder.table, tableOrders[currentOrder.table]); // ← this line is missing
 }
   completedOrders.push(sale);
+  deductInventoryForSale(sale);
   await sbWrite('shift_transactions', 'insert', [{
     branch: activeBranch, date: todayKey(),
     bill_no: sale.billNo, type: sale.type,
@@ -3296,6 +3323,7 @@ async function completePayment() {
     };
  
     completedOrders.push(sale);
+    deductInventoryForSale(sale);
     await sbWrite('shift_transactions', 'insert', [{
       branch: activeBranch, date: todayKey(),
       bill_no: sale.billNo, type: sale.type,
@@ -5127,6 +5155,12 @@ let _aTxData = [];
 let _aRecipes = {};
 let _aCharts = {};
   let _aMonthlyMap = {};
+let _invIngredients = [];
+async function loadInvIngredients() {
+  if (!sb) return;
+  const { data } = await sb.from('ingredients').select('id,name,unit');
+  _invIngredients = data || [];
+}
 
 function toggleAnalyticsPanel() {
   const panel = document.getElementById('analytics-panel');
@@ -5137,6 +5171,7 @@ function toggleAnalyticsPanel() {
     const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0,10);
     if (!document.getElementById('a-date-from').value) document.getElementById('a-date-from').value = monthStart;
     if (!document.getElementById('a-date-to').value) document.getElementById('a-date-to').value = today;
+    loadInvIngredients();
     aPopulateMenuSelector();
     aLoadAllRecipes();
     aRefreshAll();
@@ -5463,21 +5498,31 @@ async function aLoadAllRecipes() {
 function aLoadRecipe(itemName) {
   const list=document.getElementById('a-ing-list');list.innerHTML='';
   if (_aRecipes[itemName]&&_aRecipes[itemName].length) {
-    _aRecipes[itemName].forEach(ing=>aAddIngRow(ing.name,ing.qty,ing.unit));
+    _aRecipes[itemName].forEach(ing=>aAddIngRow(ing.name,ing.qty,ing.unit,ing.ingredient_id||''));
   } else { aAddIngRow(); }
 }
 
-function aAddIngRow(name='',qty='',unit='g') {
+function aAddIngRow(name='',qty='',unit='g',ingId='') {
   const list=document.getElementById('a-ing-list');
   const row=document.createElement('div');row.className='a-ing-row';
+  const opts = _invIngredients.map(i=>`<option value="${i.id}" data-unit="${i.unit}" ${i.id===ingId?'selected':''}>${i.name}</option>`).join('');
   row.innerHTML=`
-    <input type="text" value="${name}" placeholder="Ingredient" style="flex:1;background:#1c1f27;border:1px solid rgba(255,255,255,0.07);border-radius:7px;padding:6px 9px;color:#f0f0f0;font-family:'Outfit',sans-serif;font-size:12px;outline:none;">
+    <select class="ing-select" onchange="aIngRowUnitSync(this)" style="flex:1;background:#1c1f27;border:1px solid rgba(255,255,255,0.07);border-radius:7px;padding:6px 9px;color:#f0f0f0;font-family:'Outfit',sans-serif;font-size:12px;outline:none;">
+      <option value="">— Select ingredient —</option>${opts}
+    </select>
     <input type="number" value="${qty}" placeholder="Qty" min="0" step="0.1" style="width:65px;background:#1c1f27;border:1px solid rgba(255,255,255,0.07);border-radius:7px;padding:6px 8px;color:#e67e22;font-family:'Outfit',sans-serif;font-size:12px;font-weight:700;outline:none;text-align:center;">
     <select style="width:60px;background:#1c1f27;border:1px solid rgba(255,255,255,0.07);border-radius:7px;padding:6px 5px;color:#9aa0b0;font-family:'Outfit',sans-serif;font-size:12px;outline:none;">
       ${['g','kg','ml','L','pcs','tbsp','tsp','slice'].map(u=>`<option value="${u}" ${u===unit?'selected':''}>${u}</option>`).join('')}
     </select>
     <button onclick="this.parentElement.remove()" style="width:26px;height:26px;border-radius:6px;background:rgba(192,57,43,0.15);border:none;color:#c0392b;cursor:pointer;font-size:12px;display:flex;align-items:center;justify-content:center;flex-shrink:0;">✕</button>`;
   list.appendChild(row);
+}
+function aIngRowUnitSync(sel) {
+  const opt = sel.selectedOptions[0];
+  if (!opt) return;
+  const unit = opt.getAttribute('data-unit');
+  const unitSel = sel.parentElement.querySelectorAll('select')[1];
+  if (unit && unitSel) unitSel.value = unit;
 }
 
 async function aSaveRecipe() {
@@ -5487,8 +5532,11 @@ async function aSaveRecipe() {
   const ingredients=[];
   rows.forEach(row=>{
     const inputs=row.querySelectorAll('input,select');
-    const name=inputs[0].value.trim(),qty=parseFloat(inputs[1].value)||0,unit=inputs[2].value;
-    if(name&&qty>0)ingredients.push({name,qty,unit});
+    const ingSel=inputs[0];
+    const ingredient_id=ingSel.value;
+    const name=ingSel.selectedOptions[0]?.textContent || '';
+    const qty=parseFloat(inputs[1].value)||0,unit=inputs[2].value;
+    if(ingredient_id&&qty>0)ingredients.push({ingredient_id,name,qty,unit});
   });
   if(!ingredients.length){showToast('Add at least one ingredient','error');return;}
   try {
@@ -5503,7 +5551,7 @@ async function aSaveRecipe() {
 function aEditRecipe(itemName, ingredients) {
   document.getElementById('a-recipe-sel').value=itemName;
   const list=document.getElementById('a-ing-list');list.innerHTML='';
-  ingredients.forEach(ing=>aAddIngRow(ing.name,ing.qty,ing.unit));
+  ingredients.forEach(ing=>aAddIngRow(ing.name,ing.qty,ing.unit,ing.ingredient_id||''));
   showToast('Editing: '+itemName,'success');
 }
 
