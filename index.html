@@ -1650,7 +1650,7 @@ function renderIngredients() {
     const pClass = pct > 100 ? 'hi' : pct > 50 ? 'mid' : 'lo';
     const val = cur * safe(ing.costperunit);
 
-    return `<tr>
+    return `<tr style="${ing.is_active===false?'opacity:.5;background:#fafafa;':''}">
       <td>
         <div style="font-weight:600;">${ing.name}</div>
         <div style="font-size:11px;color:var(--mid);">${ing.supplier||'—'}</div>
@@ -1668,7 +1668,7 @@ function renderIngredients() {
       <td>
         <div style="display:flex;gap:5px;">
           <button class="btn btn-sm btn-icon" style="background:#dbeafe;color:#1e40af;" onclick="editIngredient('${ing.id}')"><i class="fas fa-edit"></i></button>
-          <button class="btn btn-sm btn-icon" style="background:#fee2e2;color:#991b1b;" onclick="deleteIngredient('${ing.id}')"><i class="fas fa-trash"></i></button>
+          <button class="btn btn-sm btn-icon" style="background:${ing.is_active===false?'#d1fae5':'#fee2e2'};color:${ing.is_active===false?'#065f46':'#991b1b'};" onclick="deleteIngredient('${ing.id}')" title="${ing.is_active===false?'Reactivate':'Deactivate'}"><i class="fas fa-${ing.is_active===false?'undo':'trash'}"></i></button>
         </div>
       </td>
     </tr>`;
@@ -1753,13 +1753,17 @@ async function saveIngredient() {
 }
 
 async function deleteIngredient(id) {
-  if (!confirm('Delete this ingredient?')) return;
-  const { error } = await sb.from('ingredients').delete().eq('id',id);
+  const ing = DB.ingredients.find(i=>i.id===id);
+  if (!ing) return;
+  const goingInactive = ing.is_active !== false;
+  const msg = goingInactive ? `Deactivate "${ing.name}"? It stays in history but won't appear in new GRN/Closing/Batches.` : `Reactivate "${ing.name}"?`;
+  if (!confirm(msg)) return;
+  const { error } = await sb.from('ingredients').update({ is_active: !goingInactive }).eq('id', id);
   if (error) { toast('❌ '+error.message,'err'); return; }
-  DB.ingredients = DB.ingredients.filter(i=>i.id!==id);
+  ing.is_active = !goingInactive;
   renderIngredients();
   renderDashboard();
-  toast('Ingredient deleted');
+  toast(goingInactive ? 'Ingredient deactivated' : 'Ingredient reactivated');
 }
 
 // ─────────────────────────────────────────────
@@ -1781,7 +1785,7 @@ function openGRNManual() {
 }
 
 function addGRNRow() {
-  const opts = DB.ingredients.map(i=>
+  const opts = DB.ingredients.filter(i=>i.is_active!==false).map(i=>
     `<option value="${i.id}" data-unit="${i.unit}" data-cost="${i.costperunit}">${i.name} (${i.unit})</option>`
   ).join('');
   const row = document.createElement('div');
@@ -1989,7 +1993,7 @@ async function loadBatches() {
 function populateBatchOutputSelect(selectedId) {
   const sel = document.getElementById('batch-output-ingredient');
   sel.innerHTML = '<option value="">— Select ingredient —</option>' +
-    DB.ingredients.map(i=>`<option value="${i.id}" ${i.id===selectedId?'selected':''}>${i.name} (${i.unit})</option>`).join('');
+    DB.ingredients.filter(i=>i.is_active!==false || i.id===selectedId).map(i=>`<option value="${i.id}" ${i.id===selectedId?'selected':''}>${i.name} (${i.unit})</option>`).join('');
 }
 
 function openBatchModal() {
@@ -2006,7 +2010,7 @@ function openBatchModal() {
 }
 
 function addBatchRow(data) {
-  const opts = DB.ingredients.map(i =>
+  const opts = DB.ingredients.filter(i=>i.is_active!==false).map(i =>
     `<option value="${i.id}" data-unit="${i.unit}" data-cost="${i.costperunit}"${data && data.ingId===i.id?' selected':''}>${i.name} (${i.unit})</option>`
   ).join('');
   const row = document.createElement('div');
@@ -2295,7 +2299,7 @@ function editGRN(id) {
   const rowsDiv = document.getElementById('grn-rows');
   rowsDiv.innerHTML = '';
   items.forEach(item => {
-    const opts = DB.ingredients.map(i =>
+    const opts = DB.ingredients.filter(i=>i.is_active!==false || (data && data.ingId===i.id)).map(i =>
       '<option value="' + i.id + '"' + (i.id === item.ingredient_id ? ' selected' : '') + '>' + i.name + ' (' + i.unit + ')</option>'
     ).join('');
     const row = document.createElement('div');
@@ -2608,7 +2612,7 @@ function openManualClosing() {
 
 function generateClosingTable(bizday) {
   const tbody = document.getElementById('cl-tbody');
-  tbody.innerHTML = DB.ingredients.map(ing => {
+  tbody.innerHTML = DB.ingredients.filter(ing=>ing.is_active!==false).map(ing => {
     const opening  = getOpeningForIng(ing, bizday);
     const grnToday = getGRNTodayForIng(ing.id, bizday);
     const available = opening + grnToday;
