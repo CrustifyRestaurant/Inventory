@@ -658,23 +658,31 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
 
       <!-- DELIVERY FIELDS — only visible for Delivery orders -->
       <div id="delivery-fields" style="display:none;padding:6px 10px 0;flex-shrink:0;">
-        <textarea id="delivery-address" placeholder="📍 Delivery Address (area, street, landmark)" rows="2"
-          style="width:100%;background:var(--surface2);border:1px solid rgba(230,126,34,0.4);border-radius:8px;padding:7px 10px;color:var(--text);font-size:12px;resize:none;outline:none;font-family:'Outfit',sans-serif;"
-          oninput="saveTableOrder()"></textarea>
-        <div style="display:flex;gap:6px;margin-top:5px;align-items:center;">
-          <span style="font-size:13px;color:var(--text2);white-space:nowrap;">🚚 Del. Charge:</span>
-          <input type="number" id="delivery-charge" placeholder="0" value="0" min="0"
-            style="flex:1;background:var(--surface2);border:1px solid rgba(230,126,34,0.4);border-radius:8px;padding:6px 10px;color:var(--orange);font-family:'Outfit',sans-serif;font-size:15px;font-weight:700;outline:none;"
-            oninput="renderOrderTotals();saveTableOrder()">
-          <span style="font-size:13px;color:var(--text3);">Rs</span>
-          <div style="display:flex;gap:4px;flex-wrap:wrap;">
-            <button onclick="setDelCharge(50)" style="padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface3);color:var(--text2);font-size:12px;font-weight:700;cursor:pointer;">50</button>
-            <button onclick="setDelCharge(100)" style="padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface3);color:var(--text2);font-size:12px;font-weight:700;cursor:pointer;">100</button>
-            <button onclick="setDelCharge(150)" style="padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface3);color:var(--text2);font-size:12px;font-weight:700;cursor:pointer;">150</button>
-            <button onclick="setDelCharge(200)" style="padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface3);color:var(--text2);font-size:12px;font-weight:700;cursor:pointer;">200</button>
-          </div>
-        </div>
+    <textarea id="delivery-address" placeholder="📍 Delivery Address (area, street, landmark)" rows="2"
+      style="width:100%;background:var(--surface2);border:1px solid rgba(230,126,34,0.4);border-radius:8px;padding:7px 10px;color:var(--text);font-size:12px;resize:none;outline:none;font-family:'Outfit',sans-serif;"
+      oninput="saveTableOrder()"></textarea>
+    <div style="display:flex;gap:6px;margin-top:5px;align-items:center;">
+      <span style="font-size:13px;color:var(--text2);white-space:nowrap;">🚚 Del. Charge:</span>
+      <input type="number" id="delivery-charge" placeholder="0" value="0" min="0"
+        style="flex:1;background:var(--surface2);border:1px solid rgba(230,126,34,0.4);border-radius:8px;padding:6px 10px;color:var(--orange);font-family:'Outfit',sans-serif;font-size:15px;font-weight:700;outline:none;"
+        oninput="renderOrderTotals();saveTableOrder()">
+      <span style="font-size:13px;color:var(--text3);">Rs</span>
+      <div style="display:flex;gap:4px;flex-wrap:wrap;">
+        <button onclick="setDelCharge(50)" style="padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface3);color:var(--text2);font-size:12px;font-weight:700;cursor:pointer;">50</button>
+        <button onclick="setDelCharge(100)" style="padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface3);color:var(--text2);font-size:12px;font-weight:700;cursor:pointer;">100</button>
+        <button onclick="setDelCharge(150)" style="padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface3);color:var(--text2);font-size:12px;font-weight:700;cursor:pointer;">150</button>
+        <button onclick="setDelCharge(200)" style="padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface3);color:var(--text2);font-size:12px;font-weight:700;cursor:pointer;">200</button>
       </div>
+    </div>
+    <div style="display:flex;gap:6px;margin-top:5px;align-items:center;">
+      <span style="font-size:13px;color:var(--text2);white-space:nowrap;">🏍️ Rider:</span>
+      <select id="delivery-rider"
+        style="flex:1;background:var(--surface2);border:1px solid rgba(230,126,34,0.4);border-radius:8px;padding:6px 10px;color:var(--text);font-family:'Outfit',sans-serif;font-size:13px;font-weight:700;outline:none;"
+        onchange="saveTableOrder()">
+        <option value="">— Unassigned —</option>
+      </select>
+    </div>
+  </div>
 
       <div class="order-items-list" id="order-items-list">
         <div class="order-empty"><div class="order-empty-icon">🍽️</div><div>No items yet</div><div style="font-size:13px;margin-top:5px;color:var(--text3);">Select from the menu →</div></div>
@@ -777,7 +785,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
       <div class="cash-grid" id="cash-cards"></div>
       <div class="cash-section-title">Transactions Today</div>
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:11px;overflow:hidden;">
-        <table class="transactions-table"><thead><tr><th>Bill#</th><th>Time</th><th>Table / Type</th><th>Items</th><th>Payment</th><th style="text-align:right;">Amount</th><th>🖨️</th></tr></thead><tbody id="tx-tbody"></tbody></table>
+        <table class="transactions-table"><thead><tr><th>Bill#</th><th>Time</th><th>Table / Type</th><th>Items</th><th>Rider</th><th>Payment</th><th style="text-align:right;">Amount</th><th>🖨️</th></tr></thead><tbody id="tx-tbody"></tbody></table>
       </div>
     </div>
   </div>
@@ -1312,7 +1320,7 @@ let shiftStart = null;
 let openingBalance = 0;
 let cashInHand = 0;
 let salesTotal = 0;
-let scEnabled = true;
+let scEnabled = false;
 let scPercent = 7;
 let discType = 'flat'; // 'flat' | 'pct'
 let currentOrder = { table:null, type:'Dine-In', items:[], id:null, startTime:null, fromWeb:false, webOrderId:null };
@@ -2287,6 +2295,9 @@ const food = order ? (order.subtotal || getOrderTotal(order.items, order.type, f
       const delLabel = (order && order.type === 'Delivery' && order.deliveryAddress)
         ? `<div style="font-size:9px;color:var(--text3);margin-top:2px;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">📍 ${order.deliveryAddress}</div>`
         : '';
+      const riderLabel = (order && order.type === 'Delivery' && order.rider)
+        ? `<div style="font-size:9px;color:var(--gold);margin-top:1px;font-weight:700;">🏍️ ${order.rider}</div>`
+        : '';
       const itemsSummary = (order && order.items && order.items.length)
         ? `<div style="font-size:9px;color:var(--text2);margin-top:1px;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${order.items.slice(0,2).map(i=>i.qty+'x '+i.name.split(' ')[0]).join(', ')}${order.items.length>2?'…':''}</div>`
         : '';
@@ -2295,6 +2306,7 @@ const food = order ? (order.subtotal || getOrderTotal(order.items, order.type, f
         <div class="table-icon">${icon}</div>
         <div class="table-name">${tname.replace('-',' ')}</div>
         ${delLabel}
+        ${riderLabel}
         ${itemsSummary}
         <div class="table-timer" id="timer-${tname}">${timer}</div>
         ${order ? `<div class="table-amount">Rs ${grand}</div>` : ''}
@@ -2351,7 +2363,7 @@ async function openTable(tname, floor) {
       } catch(e) { console.warn('Could not load order items:', e); }
     }
   } else {
-    currentOrder = { table:tname, type:orderType, items:[], startTime:Date.now(), id:null, scEnabled:orderType==='Dine-In', scPct:7, fromWeb:false, confirmed:false, webOrderId:null };
+    currentOrder = { table:tname, type:orderType, items:[], startTime:Date.now(), id:null, scEnabled:false, scPct:7, fromWeb:false, confirmed:false, webOrderId:null };
   }
   scEnabled = currentOrder.scEnabled !== undefined ? currentOrder.scEnabled : (orderType==='Dine-In');
   scPercent = currentOrder.scPct || 7;
@@ -2392,6 +2404,12 @@ async function createPosOrderRecord(tname, type) {
     console.error('createPosOrderRecord error:', e); 
   }
 }
+function populateRiderDropdown() {
+  const sel = document.getElementById('delivery-rider');
+  const riders = BRANCHES[activeBranch].riders;
+  sel.innerHTML = '<option value="">— Unassigned —</option>' +
+    riders.map(r => `<option value="${r}">${r}</option>`).join('');
+}
 
 function openOrderView(tname, type) {
   switchViewDirect('order');
@@ -2416,7 +2434,7 @@ if (currentOrder.fromWeb) {
     document.getElementById('sc-toggle-btn').style.opacity = '1';
     document.getElementById('sc-toggle-btn').style.cursor = 'pointer';
   } else {
-    scEnabled = type==='Dine-In' ? (currentOrder.scEnabled !== undefined ? currentOrder.scEnabled : true) : false;
+    scEnabled = type==='Dine-In' ? (currentOrder.scEnabled !== undefined ? currentOrder.scEnabled : false) : false;
     document.getElementById('sc-toggle-btn').disabled = false;
     document.getElementById('sc-toggle-btn').style.opacity = '1';
     document.getElementById('sc-toggle-btn').style.cursor = 'pointer';
@@ -2428,6 +2446,8 @@ if (currentOrder.fromWeb) {
   delFields.style.display = type==='Delivery' ? 'block' : 'none';
   document.getElementById('delivery-address').value = currentOrder.deliveryAddress || '';
   document.getElementById('delivery-charge').value = currentOrder.deliveryCharge !== undefined ? currentOrder.deliveryCharge : 0;
+  populateRiderDropdown();
+document.getElementById('delivery-rider').value = currentOrder.rider || '';
 // Show correct payment button based on type
 const isTakeaway = type === 'Takeaway';
 document.getElementById('takeaway-paid-btn-wrap').style.display = isTakeaway ? 'block' : 'none';
@@ -2763,6 +2783,7 @@ function saveTableOrder() {
   if (currentOrder.type === 'Delivery') {
     currentOrder.deliveryAddress = document.getElementById('delivery-address').value;
     currentOrder.deliveryCharge  = parseFloat(document.getElementById('delivery-charge').value) || 0;
+    currentOrder.rider = document.getElementById('delivery-rider').value || '';
   }
  
   // Deep-copy so mutations to currentOrder.items don't corrupt tableOrders
@@ -3496,6 +3517,7 @@ async function completePayment() {
     }
  
     const billNo = String(billCounter).padStart(3, '0');
+    const riderTag = (currentOrder.type === 'Delivery' && currentOrder.rider) ? ` [Rider: ${currentOrder.rider}]` : '';
     const sale = {
       billNo, table: currentOrder.table, type: currentOrder.type,
       items: [...currentOrder.items], total: grand, method: payMethod,
@@ -3511,6 +3533,8 @@ async function completePayment() {
         ? (parseFloat(document.getElementById('split-cash').value) || 0) : 0,
       splitCard: payMethod === 'split'
         ? (parseFloat(document.getElementById('split-card').value) || 0) : 0,
+      rider: currentOrder.rider || '',
+      riderTag: riderTag
     };
  
     completedOrders.push(sale);
@@ -3520,8 +3544,7 @@ async function completePayment() {
       bill_no: sale.billNo, type: sale.type,
       table_loc: sale.table || '',
       items: sale.items,
-      items_text: sale.items.map(i => `${i.qty}x ${i.name}`).join(', '),
-      subtotal: sale.items.reduce((s,i) => s + i.price * i.qty, 0),
+items_text: sale.items.map(i => `${i.qty}x ${i.name}`).join(', ') + sale.riderTag,      subtotal: sale.items.reduce((s,i) => s + i.price * i.qty, 0),
       sc: sale.sc, sc_pct: sale.scPct, discount: sale.disc || 0,
       delivery_charge: sale.deliveryCharge || 0,
       total: sale.total, method: sale.method,
@@ -4034,8 +4057,12 @@ const expected = openingBalance + totalCash - totalDelFees - cashOuts;
   if (o.items && o.items.length && o.items[0].name) return o.items.map(i => i.qty + 'x ' + i.name).join(', ');
   const raw = o.itemsText || o.items_text || '';
   if (!raw) return '—';
-  // Handle both newline-separated (kitchen format) and comma-separated
-  return raw.replace(/\n/g, ', ').replace(/\s+/g, ' ').trim() || '—';
+  return raw.replace(/\[Rider:.*?\]/g, '').replace(/\n/g, ', ').replace(/\s+/g, ' ').trim() || '—';
+})()}</td>
+<td style="color:var(--gold);font-size:12px;font-weight:700;">${(() => {
+  const raw = o.itemsText || o.items_text || '';
+  const m = raw.match(/\[Rider:\s*([^\]]+)\]/);
+  return m ? '🏍️ ' + m[1].trim() : '—';
 })()}</td>
 <td><span class="tx-type ${o.method==='cash-out'?'tx-void':'tx-sale'}">${o.method}</span></td>
       <td style="text-align:right;font-weight:700;color:${o.total<0?'var(--red)':'var(--green)'};">Rs ${Math.abs(o.total)}</td>
