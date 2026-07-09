@@ -3665,25 +3665,34 @@ function printKitchenTicket() {
 
   if (type === 'Dine-In') {
     headerHTML = `
-      <div style="background:#000;color:#fff;padding:10px 14px;border-radius:8px;margin-bottom:12px;">
-        <div style="font-size:12px;font-weight:700;letter-spacing:2px;text-transform:uppercase;opacity:0.8;">DINE-IN &nbsp;·&nbsp; KOT #${kotNum}</div>
-        <div style="font-size:42px;font-weight:900;letter-spacing:1px;line-height:1;">${table}</div>
+      <div style="border:2px solid #000;border-radius:8px;padding:10px 14px;margin-bottom:12px;">
+        <div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px;">
+          <span style="font-size:44px;font-weight:900;letter-spacing:1px;line-height:1;">${table}</span>
+          <span style="font-size:22px;font-weight:900;letter-spacing:0.5px;white-space:nowrap;">KOT #${kotNum}</span>
+        </div>
+        <div style="font-size:13px;font-weight:700;letter-spacing:2px;text-transform:uppercase;margin-top:4px;">DINE-IN</div>
       </div>`;
 
   } else if (type === 'Takeaway') {
     headerHTML = `
-      <div style="background:#1a5c80;color:#fff;padding:10px 14px;border-radius:8px;margin-bottom:12px;">
-        <div style="font-size:12px;font-weight:700;letter-spacing:2px;text-transform:uppercase;opacity:0.8;">TAKEAWAY &nbsp;·&nbsp; KOT #${kotNum}</div>
-        <div style="font-size:48px;font-weight:900;line-height:1;">🎫 #${tokenNum}</div>
-        ${custName ? `<div style="font-size:18px;font-weight:800;margin-top:4px;opacity:0.9;">👤 ${custName}</div>` : ''}
+      <div style="border:2px solid #000;border-radius:8px;padding:10px 14px;margin-bottom:12px;">
+        <div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px;">
+          <span style="font-size:48px;font-weight:900;line-height:1;">🎫 #${tokenNum}</span>
+          <span style="font-size:22px;font-weight:900;letter-spacing:0.5px;white-space:nowrap;">KOT #${kotNum}</span>
+        </div>
+        <div style="font-size:13px;font-weight:700;letter-spacing:2px;text-transform:uppercase;margin-top:4px;">TAKEAWAY</div>
+        ${custName ? `<div style="font-size:18px;font-weight:800;margin-top:4px;">👤 ${custName}</div>` : ''}
       </div>`;
 
   } else if (type === 'Delivery') {
     headerHTML = `
-      <div style="background:#922b21;color:#fff;padding:10px 14px;border-radius:8px;margin-bottom:12px;">
-        <div style="font-size:12px;font-weight:700;letter-spacing:2px;text-transform:uppercase;opacity:0.8;">DELIVERY &nbsp;·&nbsp; KOT #${kotNum}</div>
-        <div style="font-size:20px;font-weight:900;line-height:1.3;margin-top:4px;">📍 ${delAddr || table}</div>
-        ${custName ? `<div style="font-size:16px;font-weight:700;margin-top:4px;opacity:0.9;">👤 ${custName}</div>` : ''}
+      <div style="border:2px solid #000;border-radius:8px;padding:10px 14px;margin-bottom:12px;">
+        <div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px;">
+          <span style="font-size:20px;font-weight:900;line-height:1.3;">📍 ${delAddr || table}</span>
+          <span style="font-size:22px;font-weight:900;letter-spacing:0.5px;white-space:nowrap;">KOT #${kotNum}</span>
+        </div>
+        <div style="font-size:13px;font-weight:700;letter-spacing:2px;text-transform:uppercase;margin-top:4px;">DELIVERY</div>
+        ${custName ? `<div style="font-size:16px;font-weight:700;margin-top:4px;">👤 ${custName}</div>` : ''}
       </div>`;
   }
 
