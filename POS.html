@@ -3304,7 +3304,7 @@ function printBillOnly() {
   const delCharge = getDelCharge();
   const { food, sc, grand, disc } = getOrderTotal(currentOrder.items, currentOrder.type, scOn, pct, discAmt, discType, delCharge);
   const bill = {
-    billNo: String(billCounter).padStart(3,'0') + '-PRE',
+    billNo: String(billCounter).padStart(3,'0'),
     table: currentOrder.table,
     type: currentOrder.type,
     items: [...currentOrder.items],
@@ -3735,54 +3735,67 @@ function printKitchenTicket() {
 function printReceipt(sale, isSplit=false) {
   const br = BRANCHES[activeBranch];
   const food = sale.items.reduce((s,i) => s + i.price * i.qty, 0);
-  const itemsText = sale.items.map(i =>
-    `${i.qty}x ${i.name}${i.note ? '\n   > '+i.note : ''}   Rs ${i.price * i.qty}`
-  ).join('\n');
+  const itemsHTML = sale.items.map(i => `
+    <div style="margin-bottom:9px;">
+      <div style="display:flex;justify-content:space-between;gap:10px;">
+        <span style="font-size:15px;font-weight:700;">${i.qty}x ${i.name}</span>
+        <span style="font-size:15px;font-weight:700;white-space:nowrap;">Rs ${i.price * i.qty}</span>
+      </div>
+      ${i.note ? `<div style="font-size:12px;font-weight:600;margin-top:2px;padding-left:14px;">↳ ${i.note}</div>` : ''}
+    </div>
+  `).join('');
   const methodLabel = {
     cash:'CASH', card:'CARD', bank:'BANK TRANSFER',
     jazzcash:'JAZZCASH', foodpanda:'FOODPANDA',
     split:'SPLIT', 'split-bill':'SPLIT BILL'
   }[sale.method] || sale.method.toUpperCase();
 
-  const changeAmt = sale.method==='cash'
-    ? Math.max(0, (parseFloat(document.getElementById('cash-received')?.value)||0) - sale.total)
-    : 0;
-
   document.getElementById('print-area').innerHTML = `
-    <div style="font-family:'Courier New',monospace;color:black;padding:5px;width:72mm;">
-      <div style="text-align:center;">
-        <h1 style="margin:0;font-size:22px;font-weight:900;letter-spacing:3px;">CRUSTIFY</h1>
-        <div style="font-size:9px;font-weight:bold;border-top:1px solid #000;border-bottom:1px solid #000;padding:2px;margin:3px 0;">${br.name.toUpperCase()} BRANCH</div>
-        <div style="font-size:9px;margin-bottom:5px;">${br.address}</div>
+    <div style="font-family:'Segoe UI', Arial, Helvetica, sans-serif;color:#000;padding:12px 6px;width:72mm;line-height:1.5;">
+      <div style="text-align:center;margin-bottom:8px;">
+        <div style="font-size:26px;font-weight:900;letter-spacing:2px;">CRUSTIFY</div>
+        <div style="font-size:12px;font-weight:700;border-top:2px solid #000;border-bottom:2px solid #000;padding:5px 0;margin:8px 0;">${br.name.toUpperCase()} BRANCH</div>
+        <div style="font-size:11px;font-weight:600;line-height:1.4;">${br.address}</div>
       </div>
-      <div style="border-bottom:1px dashed #000;margin:4px 0;"></div>
-      <div style="font-size:11px;line-height:1.6;">
-        <b>Bill#  :</b> ${sale.billNo||'—'}<br>
-        <b>Date   :</b> ${new Date(sale.time).toLocaleString('en-PK')}<br>
-        <b>Table  :</b> ${(sale.table||'').replace(/-/g,' ')}<br>
-        <b>Type   :</b> ${sale.type}<br>
-        <b>Staff  :</b> ${sale.staff}
-        ${sale.customerName ? `<br><b>Name   :</b> ${sale.customerName}` : ''}
-        ${sale.customerPhone ? `<br><b>Phone  :</b> ${sale.customerPhone}` : ''}
-        ${sale.deliveryAddress ? `<br><b>Addr   :</b> ${sale.deliveryAddress}` : ''}
+
+      <div style="border-bottom:2px solid #000;margin:10px 0;"></div>
+
+      <div style="font-size:13px;line-height:2;font-weight:600;">
+        <div style="display:flex;justify-content:space-between;"><span>Bill #</span><span style="font-weight:800;">${sale.billNo||'—'}</span></div>
+        <div style="display:flex;justify-content:space-between;"><span>Date</span><span>${new Date(sale.time).toLocaleString('en-PK')}</span></div>
+        <div style="display:flex;justify-content:space-between;"><span>Table</span><span>${(sale.table||'').replace(/-/g,' ')}</span></div>
+        <div style="display:flex;justify-content:space-between;"><span>Type</span><span>${sale.type}</span></div>
+        <div style="display:flex;justify-content:space-between;"><span>Staff</span><span>${sale.staff}</span></div>
+        ${sale.customerName ? `<div style="display:flex;justify-content:space-between;"><span>Name</span><span>${sale.customerName}</span></div>` : ''}
+        ${sale.customerPhone ? `<div style="display:flex;justify-content:space-between;"><span>Phone</span><span>${sale.customerPhone}</span></div>` : ''}
+        ${sale.deliveryAddress ? `<div style="display:flex;justify-content:space-between;gap:10px;"><span>Address</span><span style="text-align:right;">${sale.deliveryAddress}</span></div>` : ''}
       </div>
-      <div style="border-bottom:1px solid #000;margin:5px 0;"></div>
-      <div style="font-size:12px;font-weight:bold;white-space:pre-wrap;line-height:1.8;">${itemsText}</div>
-      <div style="border-bottom:1px dashed #000;margin:5px 0;"></div>
-      <div style="font-size:12px;line-height:1.8;">
-        <div style="display:flex;justify-content:space-between;"><span>Subtotal:</span><span>Rs ${food}</span></div>
-        ${sale.sc>0 ? `<div style="display:flex;justify-content:space-between;"><span>Service Charge (${sale.scPct}%):</span><span>Rs ${sale.sc}</span></div>` : ''}
-        ${(sale.deliveryCharge||0)>0 ? `<div style="display:flex;justify-content:space-between;"><span>Delivery Charge:</span><span>Rs ${sale.deliveryCharge}</span></div>` : ''}
-        ${sale.disc>0 ? `<div style="display:flex;justify-content:space-between;color:#27ae60;font-weight:700;"><span>Discount Applied:</span><span>-Rs ${sale.disc}</span></div>` : ''}
-        <div style="display:flex;justify-content:space-between;font-size:15px;font-weight:900;border-top:2px solid #000;padding-top:3px;margin-top:3px;">
-          <span>TOTAL:</span><span>Rs ${sale.total}</span>
-        </div>
-        ${sale.method==='split' ? `<div style="font-size:10px;margin-top:2px;">Cash: Rs ${sale.splitCash}  |  Card: Rs ${sale.splitCard}</div>` : ''}
-        <div style="font-size:11px;margin-top:2px;">Paid via: ${methodLabel}</div>
-        ${sale.method==='cash' && sale.cashReceived ? `<div style="display:flex;justify-content:space-between;"><span>Cash Received:</span><span>Rs ${sale.cashReceived}</span></div>` : ''}
-${sale.method==='cash' && sale.cashReceived ? `<div style="display:flex;justify-content:space-between;font-weight:700;"><span>Change Returned:</span><span>Rs ${Math.max(0, sale.cashReceived - sale.total)}</span></div>` : ''}
+
+      <div style="border-bottom:2px solid #000;margin:12px 0;"></div>
+
+      <div>${itemsHTML}</div>
+
+      <div style="border-bottom:2px solid #000;margin:12px 0;"></div>
+
+      <div style="font-size:14px;font-weight:700;line-height:1.9;">
+        <div style="display:flex;justify-content:space-between;"><span>Subtotal</span><span>Rs ${food}</span></div>
+        ${sale.sc>0 ? `<div style="display:flex;justify-content:space-between;"><span>Service Charge (${sale.scPct}%)</span><span>Rs ${sale.sc}</span></div>` : ''}
+        ${(sale.deliveryCharge||0)>0 ? `<div style="display:flex;justify-content:space-between;"><span>Delivery Charge</span><span>Rs ${sale.deliveryCharge}</span></div>` : ''}
+        ${sale.disc>0 ? `<div style="display:flex;justify-content:space-between;"><span>Discount Applied</span><span>-Rs ${sale.disc}</span></div>` : ''}
       </div>
-      <div style="border-top:1px dashed #000;margin-top:6px;padding-top:5px;text-align:center;font-size:10px;">
+
+      <div style="display:flex;justify-content:space-between;align-items:baseline;font-size:22px;font-weight:900;border-top:3px solid #000;border-bottom:3px solid #000;padding:9px 0;margin:10px 0;">
+        <span>TOTAL</span><span>Rs ${sale.total}</span>
+      </div>
+
+      <div style="font-size:13px;font-weight:700;line-height:1.9;">
+        ${sale.method==='split' ? `<div style="display:flex;justify-content:space-between;"><span>Cash</span><span>Rs ${sale.splitCash}</span></div><div style="display:flex;justify-content:space-between;"><span>Card</span><span>Rs ${sale.splitCard}</span></div>` : ''}
+        <div style="display:flex;justify-content:space-between;"><span>Paid via</span><span>${methodLabel}</span></div>
+        ${sale.method==='cash' && sale.cashReceived ? `<div style="display:flex;justify-content:space-between;"><span>Cash Received</span><span>Rs ${sale.cashReceived}</span></div>` : ''}
+        ${sale.method==='cash' && sale.cashReceived ? `<div style="display:flex;justify-content:space-between;"><span>Change Returned</span><span>Rs ${Math.max(0, sale.cashReceived - sale.total)}</span></div>` : ''}
+      </div>
+
+      <div style="border:2px solid #000;border-radius:6px;margin-top:16px;padding:12px;text-align:center;font-size:13px;font-weight:700;line-height:1.6;">
         Thank you for dining with us! 🙏<br>crustify.pk
       </div>
     </div>`;
