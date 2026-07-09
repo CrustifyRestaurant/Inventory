@@ -386,7 +386,36 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
 .aab-cancel{background:var(--surface2);color:var(--text2);border:1px solid var(--border);}
 @media print{
   body>*:not(#print-area){display:none!important;}
-  #print-area{display:block!important;width:72mm;font-family:'Courier New',monospace;font-size:14px;color:black;}
+  #print-area{
+    display:block!important;
+    width:72mm;
+    font-family:'Courier New',monospace;
+    font-size:15px;
+    color:#000;
+  }
+  #print-area *{
+    font-weight:700 !important;
+    color:#000 !important;
+    background:transparent !important;
+    background-color:transparent !important;
+  }
+
+  /* Dashed dividers -> solid, thicker (fixes dotted look) */
+  #print-area [style*="dashed"]{
+    border-style:solid !important;
+    border-width:2px !important;
+  }
+
+  /* Give the header bars a solid black border instead of a black fill,
+     so "DINE-IN · KOT #001" and the table number still stand out */
+  #print-area [style*="background:#000"],
+  #print-area [style*="background:#1a5c80"],
+  #print-area [style*="background:#922b21"]{
+    border:2px solid #000 !important;
+    border-radius:6px !important;
+    padding:6px 10px !important;
+  }
+
   @page{size:72mm auto;margin:0;}
 }
 #print-area{display:none;}
