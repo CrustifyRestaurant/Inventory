@@ -1273,6 +1273,7 @@ tr:hover td{background:#fafafa;}
           <label><input type="checkbox" id="nu-perm-consumption" checked> Consumption</label>
           <label><input type="checkbox" id="nu-perm-manageusers"> Manage Users</label>
           <label><input type="checkbox" id="nu-perm-batches" checked> Batches</label>
+          <label><input type="checkbox" id="nu-perm-delete"> 🔒 Can Delete Records (GRN/Closing/Batch)</label>
         </div>
       </div>
       <button class="btn btn-primary" style="width:100%;margin-bottom:20px;" onclick="createUser()">
@@ -1755,6 +1756,7 @@ async function saveIngredient() {
 }
 
 async function deleteIngredient(id) {
+  if (!canDeleteRecords()) { toast('❌ You do not have permission to modify this', 'err'); return; }
   const ing = DB.ingredients.find(i=>i.id===id);
   if (!ing) return;
   const goingInactive = ing.is_active !== false;
@@ -2142,6 +2144,7 @@ function editBatch(id) {
 }
 
 async function deleteBatch(id) {
+  if (!canDeleteRecords()) { toast('❌ You do not have permission to delete records', 'err'); return; }
   if (!confirm('Delete this batch recipe?')) return;
   await sb.from('batches').delete().eq('id',id);
   DB.batches = DB.batches.filter(b=>b.id!==id);
@@ -2237,6 +2240,7 @@ async function produceBatch(batchId) {
 }
 
 async function deleteGRN(id) {
+  if (!canDeleteRecords()) { toast('❌ You do not have permission to delete records', 'err'); return; }
   if (!confirm('Delete this GRN? Stock will be reverted.')) return;
   const items = DB.grnItems.filter(i=>i.grn_id===id);
   for (const item of items) {
@@ -3260,6 +3264,7 @@ function renderClosingHistory() {
 }
 
 async function deleteClosing(id) {
+  if (!canDeleteRecords()) { toast('❌ You do not have permission to delete records', 'err'); return; }
   if (!confirm('Delete this closing? This cannot be undone.')) return;
   const { error } = await sb.from('closing').delete().eq('id', id);
   if (error) { toast('❌ ' + error.message, 'err'); return; }
@@ -3782,6 +3787,11 @@ function applyRolePermissions() {
     switchTab(firstAllowedBtn);
   }
 }
+function canDeleteRecords() {
+  if (!CURRENT_USER) return false;
+  if (CURRENT_USER.role === 'admin') return true;
+  return CURRENT_USER.permissions?.delete_records === true;
+}
 
 // ── USER MANAGEMENT (admin only) ──
 async function openUserManager() {
@@ -3824,6 +3834,7 @@ async function renderUsers() {
           <label><input type="checkbox" id="perm_${u.id}_t-consumption" ${p['t-consumption']?'checked':''}> Consumption</label>
           <label><input type="checkbox" id="perm_${u.id}_manage_users" ${p['manage_users']?'checked':''}> Manage Users</label>
           <label><input type="checkbox" id="perm_${u.id}_t-batches" ${p['t-batches']?'checked':''}> Batches</label>
+          <label><input type="checkbox" id="perm_${u.id}_delete_records" ${p['delete_records']?'checked':''}> 🔒 Can Delete Records</label>
         </div>
         <button class="btn btn-sm btn-purple" onclick="saveUserPermissions('${u.id}')"><i class="fas fa-save"></i> Save Access</button>
       </td>
@@ -3845,6 +3856,7 @@ async function saveUserPermissions(id) {
     't-consumption': document.getElementById(`perm_${id}_t-consumption`).checked,
     'manage_users':  document.getElementById(`perm_${id}_manage_users`).checked,
     't-batches':     document.getElementById(`perm_${id}_t-batches`).checked,
+    'delete_records': document.getElementById(`perm_${id}_delete_records`).checked,
   };
   const { error } = await sb.from('app_users').update({ permissions }).eq('id', id);
   if (error) { toast('❌ ' + error.message, 'err'); return; }
@@ -3865,7 +3877,8 @@ async function createUser() {
     't-closing':     document.getElementById('nu-perm-closing').checked,
     't-consumption': document.getElementById('nu-perm-consumption').checked,
     'manage_users':  document.getElementById('nu-perm-manageusers').checked,
-    't-batches':     document.getElementById('nu-perm-batches').checked
+    't-batches':     document.getElementById('nu-perm-batches').checked,
+    'delete_records': document.getElementById('nu-perm-delete').checked,
   };
 
   const { error } = await sb.from('app_users').insert({
