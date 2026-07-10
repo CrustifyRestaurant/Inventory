@@ -1511,13 +1511,13 @@ function convertQtyToUnit(qty, fromUnit, toUnit) {
   return qty; // unconvertible units (pcs, tbsp, etc.) — leave as-is
 }
 
-async function deductInventoryForSale(sale) {
+async function deductInventoryForSale(sale, bizdayOverride) {
   if (!sb) return;
   try {
     const { data: recipes } = await sb.from('item_recipes').select('*').eq('branch', activeBranch);
     const recipeMap = {};
     (recipes||[]).forEach(r => recipeMap[r.item_name] = r.ingredients);
-    const bizday = todayKey();
+  const bizday = bizdayOverride || todayKey();
     for (const item of sale.items) {
       if (item.returned) continue;
       const recipe = recipeMap[item.name];
@@ -1531,13 +1531,45 @@ async function deductInventoryForSale(sale) {
         const newStock = Math.max(0, (cur?.currentstock||0) - useQty);
         await sb.from('ingredients').update({ currentstock: newStock, updatedat: new Date().toISOString() }).eq('id', ing.ingredient_id);
         await sb.from('pos_consumption').insert([{
-          id: Date.now()+'-'+Math.random().toString(36).slice(2),
-          branch: activeBranch, bizday, ingredient_id: ing.ingredient_id,
-          itemname: ing.name, qty: useQty, unit: masterUnit
-        }]);
+  id: Date.now()+'-'+Math.random().toString(36).slice(2),
+  branch: activeBranch, bizday, ingredient_id: ing.ingredient_id,
+  itemname: ing.name, qty: useQty, unit: masterUnit,
+  bill_no: sale.billNo || null
+}]);
       }
     }
   } catch(e) { console.error('deductInventoryForSale', e); }
+}
+async function restoreInventoryForBill(billNo, branch, bizday) {
+  if (!sb || !billNo) return;
+  try {
+    let q = sb.from('pos_consumption').select('*').eq('bill_no', billNo).eq('branch', branch);
+    if (bizday) q = q.eq('bizday', bizday);
+    const { data: rows } = await q;
+    if (!rows || !rows.length) return;
+    for (const row of rows) {
+      const { data: cur } = await sb.from('ingredients').select('currentstock').eq('id', row.ingredient_id).single();
+      const newStock = (cur?.currentstock || 0) + (row.qty || 0);
+      await sb.from('ingredients').update({ currentstock: newStock, updatedat: new Date().toISOString() }).eq('id', row.ingredient_id);
+    }
+    await sb.from('pos_consumption').delete().eq('bill_no', billNo).eq('branch', branch);
+  } catch(e) { console.error('restoreInventoryForBill', e); }
+}
+
+async function restoreInventoryForDay(branch, bizday) {
+  if (!sb) return;
+  try {
+    const { data: rows } = await sb.from('pos_consumption').select('*').eq('branch', branch).eq('bizday', bizday);
+    if (!rows || !rows.length) return;
+    const agg = {};
+    rows.forEach(r => { agg[r.ingredient_id] = (agg[r.ingredient_id]||0) + (r.qty||0); });
+    for (const ingId in agg) {
+      const { data: cur } = await sb.from('ingredients').select('currentstock').eq('id', ingId).single();
+      const newStock = (cur?.currentstock || 0) + agg[ingId];
+      await sb.from('ingredients').update({ currentstock: newStock, updatedat: new Date().toISOString() }).eq('id', ingId);
+    }
+    await sb.from('pos_consumption').delete().eq('branch', branch).eq('bizday', bizday);
+  } catch(e) { console.error('restoreInventoryForDay', e); }
 }
 // ══════════════════════════════════
 // CLOCK & LIVE RELOAD
@@ -5090,6 +5122,7 @@ async function adminDeleteAllTransactions(date, branch) {
   const pin = prompt('Enter Admin PIN:');
   if (pin !== '7530' && pin !== '1234') { showToast('Wrong PIN', 'error'); return; }
   try {
+    await restoreInventoryForDay(branch, date);          // ← add this line
     await sb.from('shift_transactions').delete().eq('branch', branch).eq('date', date);
     showToast('All transactions deleted ✅', 'success');
     loadHistoryForDate(date);
@@ -5101,6 +5134,7 @@ async function adminDeleteFullDay(date, branch) {
   const pin = prompt('Enter Admin PIN:');
   if (pin !== '7530' && pin !== '1234') { showToast('Wrong PIN', 'error'); return; }
   try {
+    await restoreInventoryForDay(branch, date);          // ← add this line
     await Promise.all([
       sb.from('shift_reports').delete().eq('branch', branch).eq('date', date),
       sb.from('shift_transactions').delete().eq('branch', branch).eq('date', date),
@@ -5336,6 +5370,8 @@ async function adminTxDelete() {
   if (!confirm(`Delete bill #${_adminTxCurrent.billNo}?\n\nThis removes it from DB and recalculates all totals.`)) return;
 
   try {
+    await restoreInventoryForBill(_adminTxCurrent.billNo, _adminTxBranch, _adminTxDate);
+
     // Delete from Supabase by bill_no + date + branch
     await sb.from('shift_transactions')
       .delete()
@@ -5392,11 +5428,18 @@ async function adminTxSave() {
   Object.keys(updatePayload).forEach(k => updatePayload[k] === undefined && delete updatePayload[k]);
 
   try {
+    await restoreInventoryForBill(_adminTxCurrent.billNo, _adminTxBranch, _adminTxDate);
+
     await sb.from('shift_transactions')
       .update(updatePayload)
       .eq('branch', _adminTxBranch)
       .eq('bill_no', _adminTxCurrent.billNo)
       .eq('date', _adminTxDate);
+
+    if (itemsForDB.length) {
+      await deductInventoryForSale({ billNo: _adminTxCurrent.billNo, items: itemsForDB }, _adminTxDate);
+    }
+      
 
     // If today, update in memory too
     if (_adminTxIsToday) {
