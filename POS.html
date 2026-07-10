@@ -1110,6 +1110,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
         <label><input type="checkbox" id="ns-perm-void" checked> Void Orders</label>
         <label><input type="checkbox" id="ns-perm-view_totals" checked> See Running Cash Total</label>
         <label><input type="checkbox" id="ns-perm-admin_tools"> Close-All-Shifts / Admin Tools</label>
+<label><input type="checkbox" id="ns-perm-print_logout" checked> Print Logout Receipt</label>
       </div>
     </div>
 
@@ -1490,7 +1491,9 @@ async function doLogout() {
 
   await saveShiftReport();
 
-  const shouldPrint = confirm('Print closing report before logging out?');
+  const perms = currentStaffPermissions || {};
+  const canPrintLogout = currentStaffRole === 'Admin' || currentStaffRole === 'Manager' || perms.print_logout !== false;
+  const shouldPrint = canPrintLogout && confirm('Print closing report before logging out?');
   if (shouldPrint) {
     await renderClosingReport();
     printClosingReport();
@@ -1703,7 +1706,7 @@ async function applyPOSOverrides() {
 // ══════════════════════════════════
 // STAFF / USER MANAGEMENT (admin only)
 // ══════════════════════════════════
-const PERM_KEYS = ['cash','closing','history','delivery','analytics','void','view_totals','admin_tools'];
+const PERM_KEYS = ['cash','closing','history','delivery','analytics','void','view_totals','admin_tools','print_logout'];
 
 function applyPOSPermissions() {
   const perms = currentStaffPermissions || {};
@@ -1769,6 +1772,7 @@ async function renderStaffTable() {
           <label><input type="checkbox" id="sp_${s.id}_void" ${p.void!==false?'checked':''}> Void Orders</label>
           <label><input type="checkbox" id="sp_${s.id}_view_totals" ${p.view_totals!==false?'checked':''}> See Cash Total</label>
           <label><input type="checkbox" id="sp_${s.id}_admin_tools" ${p.admin_tools===true?'checked':''}> Admin Tools</label>
+          <label><input type="checkbox" id="sp_${s.id}_print_logout" ${p.print_logout!==false?'checked':''}> Print Logout Receipt</label>
         </div>
         <button onclick="saveStaffPermissions('${s.id}')" style="padding:6px 14px;border-radius:7px;background:var(--purple);color:white;border:none;font-family:'Outfit',sans-serif;font-size:12px;font-weight:800;cursor:pointer;">💾 Save Access</button>
       </td>
