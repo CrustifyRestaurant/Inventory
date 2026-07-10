@@ -450,6 +450,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
   <span class="nav-badge" id="badge-delivery"></span>
 </button>
 <button class="nav-btn" id="nav-cash" onclick="switchView('cash')">💵 Cash</button>
+<button class="nav-btn" id="nav-expense-standalone" onclick="addExpense()" style="background:rgba(230,126,34,0.15);color:var(--orange);">🧾 Expense</button>
 <button class="nav-btn" id="nav-closing" onclick="switchView('closing')">📊 Closing</button>
 <button class="nav-btn" id="nav-history" onclick="switchView('history')">📅 History</button>
 <button class="print-report-btn" id="nav-closeshifts" onclick="closeAllShifts()" style="background:var(--red);color:white;border-color:var(--red);font-weight:800;">
@@ -812,6 +813,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
           <button class="refresh-btn" onclick="renderCashView()">↻ Refresh</button>
           <button class="action-btn-sm" style="background:var(--surface2);color:var(--text2);border:1px solid var(--border);" onclick="addCashIn()">+ Cash In</button>
           <button class="action-btn-sm" style="background:rgba(192,57,43,0.15);color:var(--red);border:1px solid rgba(192,57,43,0.3);" onclick="addCashOut()">− Cash Out</button>
+          <button class="action-btn-sm" id="cash-expense-btn" style="background:rgba(230,126,34,0.15);color:var(--orange);border:1px solid rgba(230,126,34,0.3);" onclick="addExpense()">🧾 Expense</button>
         </div>
       </div>
       <div class="opening-form">
@@ -1111,6 +1113,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
         <label><input type="checkbox" id="ns-perm-view_totals" checked> See Running Cash Total</label>
         <label><input type="checkbox" id="ns-perm-admin_tools"> Close-All-Shifts / Admin Tools</label>
 <label><input type="checkbox" id="ns-perm-print_logout" checked> Print Logout Receipt</label>
+<label><input type="checkbox" id="sp_${s.id}_expense" ${p.expense!==false?'checked':''}> Record Expenses</label>
       </div>
     </div>
 
@@ -1458,7 +1461,8 @@ async function saveShiftReport() {
   const returns = completedOrders.filter(o => o.method==='return');
   const returnTotal = returns.reduce((s,o) => s+Math.abs(o.total), 0);
   const cashOuts = completedOrders.filter(o => o.method==='cash-out').reduce((s,o) => s+Math.abs(o.total), 0);
-  const expected = openingBalance + totalCash - cashOuts;
+  const expensesTotal = completedOrders.filter(o => o.method==='expense').reduce((s,o) => s+Math.abs(o.total), 0);
+  const expected = openingBalance + totalCash - cashOuts - expensesTotal;
 
   await sbWrite('shift_reports', 'insert', [{
     branch: activeBranch,
@@ -1478,6 +1482,7 @@ async function saveShiftReport() {
     returns_amount: returnTotal,
     bills_count: sales.length,
     cash_outs: cashOuts,
+    expenses: expensesTotal,
     expected_in_drawer: expected
   }]);
   console.log('Shift report saved (or queued) ✅');
@@ -1706,7 +1711,7 @@ async function applyPOSOverrides() {
 // ══════════════════════════════════
 // STAFF / USER MANAGEMENT (admin only)
 // ══════════════════════════════════
-const PERM_KEYS = ['cash','closing','history','delivery','analytics','void','view_totals','admin_tools','print_logout'];
+const PERM_KEYS = ['cash','closing','history','delivery','analytics','void','view_totals','admin_tools','print_logout','expense'];
 
 function applyPOSPermissions() {
   const perms = currentStaffPermissions || {};
@@ -1725,6 +1730,8 @@ function applyPOSPermissions() {
   gate('nav-analytics-1', isAdmin || perms.analytics === true);
   gate('nav-analytics-2', isAdmin || perms.analytics === true);
   gate('btn-manage-staff', isAdmin || perms.admin_tools === true);
+  gate('cash-expense-btn', isAdmin || perms.expense !== false);
+  gate('nav-expense-standalone', isAdmin || perms.expense !== false);
 
   const cashWrap = document.getElementById('bar-cash-wrap');
   if (cashWrap) cashWrap.style.display = (isAdmin || perms.view_totals !== false) ? '' : 'none';
@@ -1737,7 +1744,7 @@ async function openStaffManager() {
   document.getElementById('ns-role').value = 'Cashier';
   PERM_KEYS.forEach(k => {
     const el = document.getElementById('ns-perm-' + k);
-    if (el) el.checked = (k === 'cash' || k === 'closing' || k === 'history' || k === 'delivery' || k === 'void' || k === 'view_totals');
+    if (el) el.checked = (k === 'cash' || k === 'closing' || k === 'history' || k === 'delivery' || k === 'void' || k === 'view_totals' || k === 'expense');
   });
   await renderStaffTable();
   document.getElementById('staff-modal').classList.add('open');
@@ -1773,6 +1780,7 @@ async function renderStaffTable() {
           <label><input type="checkbox" id="sp_${s.id}_view_totals" ${p.view_totals!==false?'checked':''}> See Cash Total</label>
           <label><input type="checkbox" id="sp_${s.id}_admin_tools" ${p.admin_tools===true?'checked':''}> Admin Tools</label>
           <label><input type="checkbox" id="sp_${s.id}_print_logout" ${p.print_logout!==false?'checked':''}> Print Logout Receipt</label>
+          <label><input type="checkbox" id="sp_${s.id}_expense" ${p.expense!==false?'checked':''}> Record Expenses</label>
         </div>
         <button onclick="saveStaffPermissions('${s.id}')" style="padding:6px 14px;border-radius:7px;background:var(--purple);color:white;border:none;font-family:'Outfit',sans-serif;font-size:12px;font-weight:800;cursor:pointer;">💾 Save Access</button>
       </td>
@@ -4116,6 +4124,55 @@ async function addCashIn() {
   document.getElementById('bar-cash').textContent = 'Rs '+cashInHand;
   saveTodaySales(); renderCashView(); showToast('Cash In: Rs '+amt,'success');
 }
+async function addExpense() {
+  const desc = prompt('Expense description (e.g. Stationery, Cleaning, Repair):');
+  if (!desc || !desc.trim()) { showToast('Description required', 'error'); return; }
+  
+  const amtStr = prompt('Expense amount (Rs):');
+  const amt = parseFloat(amtStr) || 0;
+  if (!amt || amt <= 0) { showToast('Valid amount required', 'error'); return; }
+  
+  if (amt > cashInHand) {
+    if (!confirm('⚠️ Expense (Rs ' + amt + ') exceeds cash in drawer (Rs ' + cashInHand + ').\n\nRecord anyway?')) return;
+  }
+
+  const expenseEntry = {
+    billNo: 'EXP',
+    table: '',
+    type: 'Expense',
+    items: [{ name: desc.trim(), price: amt, qty: 1, note: '' }],
+    total: -amt,
+    method: 'expense',
+    time: new Date(),
+    staff: currentStaff,
+    branch: activeBranch,
+    sc: 0,
+    disc: 0,
+    expenseDesc: desc.trim()
+  };
+
+  completedOrders.push(expenseEntry);
+  
+  await sbWrite('shift_transactions', 'insert', [{
+    branch: activeBranch,
+    date: todayKey(),
+    bill_no: 'EXP',
+    type: 'Expense',
+    table_loc: '',
+    items_text: desc.trim(),
+    subtotal: amt,
+    total: -amt,
+    method: 'expense',
+    staff: currentStaff,
+    return_reason: desc.trim()
+  }]);
+
+  cashInHand -= amt;
+  document.getElementById('bar-cash').textContent = 'Rs ' + cashInHand;
+  saveTodaySales();
+  renderCashView();
+  showToast('🧾 Expense: Rs ' + amt + ' — ' + desc.trim(), 'error');
+}
 
 async function addCashOut() {
   const amt = parseFloat(prompt('Cash Out amount (Rs):')) || 0;
@@ -4143,7 +4200,8 @@ function renderCashView() {
 const totalSales = completedOrders.filter(o=>!['cash-in','cash-out'].includes(o.method)).reduce((s,o)=>s+o.total,0);
   const totalDelFees = completedOrders.filter(o=>o.type==='Delivery').reduce((s,o)=>s+(o.deliveryCharge||0),0);
   const shopSales = totalSales - totalDelFees;  const cashOuts = completedOrders.filter(o=>o.method==='cash-out').reduce((s,o)=>s+Math.abs(o.total),0);
-const expected = openingBalance + totalCash - totalDelFees - cashOuts;
+  const expenses = completedOrders.filter(o=>o.method==='expense').reduce((s,o)=>s+Math.abs(o.total),0);
+  const expected = openingBalance + totalCash - totalDelFees - cashOuts - expenses;
 
   document.getElementById('cash-cards').innerHTML = `
     <div class="cash-card"><div class="cash-card-label">Opening Balance</div><div class="cash-card-value">Rs ${openingBalance}</div></div>
@@ -4153,6 +4211,7 @@ const expected = openingBalance + totalCash - totalDelFees - cashOuts;
     <div class="cash-card"><div class="cash-card-label">Shop Sales</div><div class="cash-card-value orange">Rs ${shopSales}</div></div>
 <div class="cash-card"><div class="cash-card-label">Expected in Drawer</div><div class="cash-card-value green">Rs ${expected}</div></div>
 <div class="cash-card"><div class="cash-card-label">Bills Today</div><div class="cash-card-value">${completedOrders.filter(o=>!['cash-in','cash-out'].includes(o.method)).length}</div></div>
+<div class="cash-card"><div class="cash-card-label">Expenses</div><div class="cash-card-value red">Rs ${completedOrders.filter(o=>o.method==='expense').reduce((s,o)=>s+Math.abs(o.total),0)}</div></div>
   `;
 
   document.getElementById('tx-tbody').innerHTML = completedOrders.slice().reverse().map(o => `
@@ -4172,7 +4231,7 @@ const expected = openingBalance + totalCash - totalDelFees - cashOuts;
   const m = raw.match(/\[Rider:\s*([^\]]+)\]/);
   return m ? '🏍️ ' + m[1].trim() : '—';
 })()}</td>
-<td><span class="tx-type ${o.method==='cash-out'?'tx-void':'tx-sale'}">${o.method}</span></td>
+<td><span class="tx-type ${o.method==='cash-out'||o.method==='expense'?'tx-void':'tx-sale'}">${o.method}</span></td>
       <td style="text-align:right;font-weight:700;color:${o.total<0?'var(--red)':'var(--green)'};">Rs ${Math.abs(o.total)}</td>
       <td style="text-align:center;">
         <div style="display:flex;gap:3px;justify-content:center;">
@@ -4235,6 +4294,7 @@ if (sb) {
   } catch(e) {}
 }
   const cashOuts = completedOrders.filter(o=>o.method==='cash-out').reduce((s,o)=>s+Math.abs(o.total),0);
+  const expenses = completedOrders.filter(o=>o.method==='expense').reduce((s,o)=>s+Math.abs(o.total),0);
 const totalDelCharges = sales.filter(o => o.type === 'Delivery').reduce((s, o) => s + (o.deliveryCharge || 0), 0);
 const avg = sales.length>0?Math.round(shopTotal/sales.length):0;
   
@@ -4255,7 +4315,9 @@ const avg = sales.length>0?Math.round(shopTotal/sales.length):0;
     <div class="cs-card orange"><div class="cs-val">Rs ${deliveryFeesOnly}</div><div class="cs-lbl">Del Fees (Rider)</div></div>    <div class="cs-card orange"><div class="cs-val">${sales.length}</div><div class="cs-lbl">Bills Issued</div></div>
 <div class="cs-card red"><div class="cs-val">Rs ${totalCash - deliveryFeesOnly}</div><div class="cs-lbl">Cash Collected</div></div>
 <div class="cs-card blue"><div class="cs-val">Rs ${totalCard}</div><div class="cs-lbl">Card Collected</div></div>
-<div class="cs-card green"><div class="cs-val">Rs ${openingBalance+totalCash-cashOuts-deliveryFeesOnly}</div><div class="cs-lbl">Expected in Drawer</div></div>    <div class="cs-card orange"><div class="cs-val">Rs ${avg}</div><div class="cs-lbl">Avg Bill Value</div></div>
+    <div class="cs-card green"><div class="cs-val">Rs ${openingBalance+totalCash-cashOuts-deliveryFeesOnly-expenses}</div><div class="cs-lbl">Expected in Drawer</div></div>
+    <div class="cs-card red"><div class="cs-val">Rs ${expenses}</div><div class="cs-lbl">Expenses</div></div>
+    <div class="cs-card orange"><div class="cs-val">Rs ${avg}</div><div class="cs-lbl">Avg Bill Value</div></div>
   `;
 
   // Per-staff breakdown
@@ -4297,11 +4359,12 @@ const staffTotal = staffSales.reduce((s,o) => s + o.total, 0);
 <div class="cb-row"><span>Cash Sales (Shop)</span><span class="cb-row-val">Rs ${totalCash - deliveryFeesOnly}</span></div>
       <div class="cb-row"><span>Cash Sales (Del Fees)</span><span class="cb-row-val" style="color:var(--orange);">Rs ${deliveryFeesOnly}</span></div>      <div class="cb-row"><span>Card Sales</span><span class="cb-row-val">Rs ${totalCard}</span></div>
       <div class="cb-row"><span>Cash Outs</span><span class="cb-row-val" style="color:var(--red);">-Rs ${cashOuts}</span></div>
+      <div class="cb-row"><span>Expenses</span><span class="cb-row-val" style="color:var(--red);">-Rs ${expenses}</span></div>
       <div class="cb-row"><span>Staff</span><span class="cb-row-val">${currentStaff}</span></div>
       <div class="cb-row"><span>📦 Delivery Fees In</span><span class="cb-row-val" style="color:var(--orange);">Rs ${totalDelCharges}</span></div>
       <div class="cb-row" style="border-top:1px solid var(--border);margin-top:3px;padding-top:6px;">
         <span style="font-weight:700;color:white;">Total to Hand Over</span>
-        <span class="cb-row-val" style="color:var(--green);font-size:15px;">Rs ${openingBalance+totalCash-cashOuts-deliveryFeesOnly}</span>
+        <span class="cb-row-val" style="color:var(--green);font-size:15px;">Rs ${openingBalance+totalCash-cashOuts-deliveryFeesOnly-expenses}</span>
       </div>
     </div>
     <div class="cb-section" style="grid-column:1/-1;">
@@ -4765,7 +4828,7 @@ async function loadHistoryForDate(dateStr) {
   try {
     // Load shift reports for this date
     const { data: reports } = await sb.from('shift_reports')
-      .select('staff, shift_start, shift_end, total_sales, bills_count, cash_sales, card_sales, sc_collected, discounts_given, voids_count, voids_amount, expected_in_drawer, created_at')
+      .select('staff, shift_start, shift_end, total_sales, bills_count, cash_sales, card_sales, sc_collected, discounts_given, voids_count, voids_amount, expenses, expected_in_drawer, created_at')
       .eq('branch', branch)
       .eq('date', dateStr)
       .order('created_at', { ascending: true });
@@ -4852,6 +4915,10 @@ async function loadHistoryForDate(dateStr) {
             <div style="background:var(--surface2);border-radius:10px;padding:12px;">
               <div style="font-size:11px;color:var(--text3);letter-spacing:2px;text-transform:uppercase;margin-bottom:4px;">Voids</div>
               <div style="font-size:22px;font-weight:900;color:var(--red);">${r.voids_count} (Rs ${r.voids_amount})</div>
+            </div>
+            <div style="background:var(--surface2);border-radius:10px;padding:12px;">
+              <div style="font-size:11px;color:var(--text3);letter-spacing:2px;text-transform:uppercase;margin-bottom:4px;">Expenses</div>
+              <div style="font-size:22px;font-weight:900;color:var(--red);">Rs ${r.expenses || 0}</div>
             </div>
             <div style="background:var(--surface2);border-radius:10px;padding:12px;">
               <div style="font-size:11px;color:var(--text3);letter-spacing:2px;text-transform:uppercase;margin-bottom:4px;">Hand Over</div>
