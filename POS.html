@@ -624,6 +624,10 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
       <p style="color:#555d70;font-size:13px;margin-bottom:16px;">Actual ingredients used based on items sold × your recipes in the selected date range.</p>
       <div id="a-consumption-content"><div style="text-align:center;padding:30px;color:#555d70;font-size:13px;">Set date range above then click Calculate</div></div>
     </div>
+    <button onclick="clearAnalyticsCache()" 
+  style="padding:7px 16px;border-radius:8px;background:rgba(192,57,43,0.15);border:1px solid rgba(192,57,43,0.3);color:var(--red);font-family:'Outfit',sans-serif;font-size:12px;font-weight:800;cursor:pointer;">
+  🧹 Clear Data
+</button>
 
   </div>
 </div>
@@ -6150,6 +6154,44 @@ function aShowMonthDetail(mKey) {
   }
  
   document.getElementById('a-month-detail').scrollIntoView({ behavior: 'smooth' });
+}
+function clearAnalyticsCache() {
+  if (!confirm('🧹 Clear Analytics Data\n\nThis wipes the calculated view from memory.\nYour recipes in Supabase stay safe.\n\nContinue?')) return;
+  
+  // Wipe all in-memory analytics caches
+  _aTxData = [];
+  _aMonthlyMap = {};
+  
+  // Destroy all charts
+  Object.keys(_aCharts).forEach(k => aDestroyChart(k));
+  
+  // Reset stat displays
+  document.getElementById('as-total').textContent = '—';
+  document.getElementById('as-bills').textContent = '—';
+  document.getElementById('as-avg').textContent = '—';
+  document.getElementById('as-cash').textContent = '—';
+  document.getElementById('as-card').textContent = '—';
+  document.getElementById('as-del').textContent = '—';
+  document.getElementById('as-disc').textContent = '—';
+  document.getElementById('as-sc').textContent = '—';
+  
+  // Clear tables
+  document.getElementById('a-top-body').innerHTML = 
+    '<tr><td colspan="5" style="text-align:center;padding:20px;color:#555d70;font-size:12px;">Click ↻ Load to fetch data</td></tr>';
+  document.getElementById('a-all-items-body').innerHTML = 
+    '<tr><td colspan="5" style="text-align:center;padding:20px;color:#555d70;font-size:12px;">Load data first</td></tr>';
+  document.getElementById('a-item-results').innerHTML = '';
+  document.getElementById('a-item-chart-wrap').style.display = 'none';
+  document.getElementById('a-monthly-grid').innerHTML = '';
+  document.getElementById('a-month-detail').style.display = 'none';
+  
+  // Clear consumption view
+  const el = document.getElementById('a-consumption-content');
+  if (el) {
+    el.innerHTML = '<div style="text-align:center;padding:30px;color:#555d70;font-size:13px;">✅ Cleared. Set date range and click Calculate to start fresh.</div>';
+  }
+  
+  showToast('✅ Analytics data cleared', 'success');
 }
 </script>
 <script defer src="https://static.cloudflareinsights.com/beacon.min.js/v8c78df7c7c0f484497ecbca7046644da1771523124516" integrity="sha512-8DS7rgIrAmghBFwoOTujcf6D9rXvH8xm8JQ1Ja01h9QX8EzXldiszufYa4IFfKdLUKTTrnSFXLDkUEOTrZQ8Qg==" data-cf-beacon='{"version":"2024.11.0","token":"80b7337066234d5c97e6656da5a7fef3","r":1,"server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous">
