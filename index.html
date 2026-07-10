@@ -1422,12 +1422,8 @@ let DB = { ingredients: [], grn: [], grnItems: [], closing: [], closingItems: []
 // ─────────────────────────────────────────────
 function bizDayToday() {
   const now = new Date();
-  if (now.getHours() < 2) {
-    const yd = new Date(now);
-    yd.setDate(yd.getDate() - 1);
-    return yd.toISOString().slice(0,10);
-  }
-  return now.toISOString().slice(0,10);
+  const pkTime = new Date(now.getTime() + (5 * 60 * 60 * 1000));
+  return pkTime.toISOString().slice(0, 10);
 }
 
 function uid() {
