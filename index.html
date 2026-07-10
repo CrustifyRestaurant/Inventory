@@ -2931,10 +2931,8 @@ function renderClosingReport() {
             <td style="text-align:center;font-weight:900;color:var(--danger);">
               <span id="kc_${i.id}">${fmtNum(i.consumed,3)}</span>
             </td>
-            <td style="text-align:center;">
-  <span class="pos-input" id="pos_${i.id}" style="display:inline-flex;align-items:center;justify-content:center;background:#f0f9ff;border:2px solid #bae6fd;color:#0891b2;font-weight:700;cursor:default;">
-    ${fmtNum(i.posconsumed,3)}
-  </span>
+            <td style="text-align:center;font-weight:700;color:#0891b2;">
+  ${fmtNum(i.posconsumed,3)}
 </td>
             <td style="text-align:center;"><span id="diff_${i.id}" class="diff-badge"></span></td>
             <td style="text-align:center;">${fmtCurrency(i.costperunit)}</td>
@@ -2959,25 +2957,15 @@ function diffBadgeHTML(diff) {
 
 function calcPosDiff(itemId) {
   const item = DB.closingItems.find(i => i.id === itemId);
-  const posEl  = document.getElementById('pos_' + itemId);
   const diffEl = document.getElementById('diff_' + itemId);
   if (!item || !diffEl) return;
   const kitchenConsumed = safe(item.consumed);
-  const posConsumed     = posEl ? safe(posEl.value) : safe(item.posconsumed);
+  const posConsumed     = safe(item.posconsumed);
   const diff = kitchenConsumed - posConsumed;
   diffEl.outerHTML = diffBadgeHTML(diff).replace('class="diff-badge', 'id="diff_' + itemId + '" class="diff-badge');
 }
 
-async function savePosConsumed(itemId) {
-  const item  = DB.closingItems.find(i => i.id === itemId);
-  const posEl = document.getElementById('pos_' + itemId);
-  if (!item || !posEl) return;
-  const posConsumed = safe(posEl.value);
-  item.posconsumed = posConsumed;
-  const { error } = await sb.from('closing_items').update({ posconsumed: posConsumed }).eq('id', itemId);
-  if (error) { toast('❌ ' + error.message, 'err'); return; }
-  calcPosDiff(itemId);
-}
+
 function calcPhysicalDiff(itemId) {
   const item = DB.closingItems.find(i => i.id === itemId);
   const physEl = document.getElementById('phys_' + itemId);
@@ -2992,7 +2980,7 @@ function calcPhysicalDiff(itemId) {
   const available = safe(item.available);
   const rawDiff = available - physical;
   const consumed = Math.max(0, rawDiff);
-  const posConsumed = posEl ? safe(posEl.value) : safe(item.posconsumed);
+  const posConsumed = safe(item.posconsumed);
   const diff = consumed - posConsumed;
   const cost = consumed * safe(item.costperunit);
   
