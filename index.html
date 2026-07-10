@@ -2661,31 +2661,41 @@ async function saveManualClosing() {
   let totalCost = 0;
   const items = [];
 
-  for (const ing of DB.ingredients) {
+  const activeIngs = DB.ingredients.filter(i => i.is_active !== false);
+  const posMap = {};
+  
+  await Promise.all(activeIngs.map(async ing => {
+    try {
+      const { data } = await sb.from('pos_consumption').select('qty').eq('ingredient_id', ing.id).eq('bizday', bizday);
+      posMap[ing.id] = (data || []).reduce((s, r) => s + safe(r.qty), 0);
+    } catch (e) {
+      posMap[ing.id] = 0;
+    }
+  }));
+
+  for (const ing of activeIngs) {
     const opening   = getOpeningForIng(ing, bizday);
     const grnToday  = getGRNTodayForIng(ing.id, bizday);
     const available = opening + grnToday;
     const physEl    = document.getElementById(`phys_${ing.id}`);
-    const physical  = physEl?.value !== '' ? safe(physEl.value) : available;
+    const physical  = physEl && physEl.value !== '' ? safe(physEl.value) : available;
     const rawDiff   = available - physical;
     const consumed  = Math.max(0, rawDiff);
-    const variance  = rawDiff < 0 ? Math.abs(rawDiff) : 0; // physical count exceeded available
+    const variance  = rawDiff < 0 ? Math.abs(rawDiff) : 0;
     const cpu       = safe(ing.costperunit);
     const cost      = consumed * cpu;
     if (consumed > 0) totalCost += cost;
     if (variance > 0) {
-      console.warn(`⚠️ Variance: ${ing.name} counted ${variance} ${ing.unit} MORE than available. Check for missed GRN or bad opening figure.`);
+      console.warn(`⚠️ Variance: ${ing.name} counted ${variance} ${ing.unit} MORE than available.`);
     }
     items.push({
       id: uid(), closing_id: closingId, ingredient_id: ing.id,
       itemname: ing.name, unit: ing.unit,
       opening, grntoday: grnToday, available, physical,
       consumed, variance, costperunit: cpu, consumptioncost: cost,
-      posconsumed: await getPOSConsumedForIng(ing.id, bizday)
+      posconsumed: posMap[ing.id] || 0
     });
   }
-
-  
 
   setSyncStatus('busy','Saving closing…');
 
@@ -2694,25 +2704,38 @@ async function saveManualClosing() {
   });
   if (hErr) { toast('❌ '+hErr.message,'err'); return; }
 
-  for (let i=0;i<items.length;i+=100) {
-    const { error } = await sb.from('closing_items').insert(items.slice(i,i+100));
+  for (let i = 0; i < items.length; i += 100) {
+    const { error } = await sb.from('closing_items').insert(items.slice(i, i + 100));
     if (error) { toast('❌ Items: '+error.message,'err'); return; }
   }
 
-  for (const item of items) {
-    const ing = DB.ingredients.find(i=>i.id===item.ingredient_id);
-    if (ing) {
-      ing.currentstock = item.physical;
-      ing.openingstock = item.physical;
-      ing.openingdate  = bizday;
-      await sb.from('ingredients').update({
-        currentstock: item.physical, openingstock: item.physical,
-        openingdate: bizday, updatedat: new Date().toISOString()
-      }).eq('id', ing.id);
-    }
+  // FIX: Update ingredients in parallel with Promise.all (not sequential await)
+  // Also include ALL not-null fields to satisfy upsert, OR use .update() with .eq()
+  const updatePromises = items.map(item => {
+    const ing = DB.ingredients.find(i => i.id === item.ingredient_id);
+    if (!ing) return Promise.resolve();
+    
+    ing.currentstock = item.physical;
+    ing.openingstock = item.physical;
+    ing.openingdate  = bizday;
+    
+    // Use .update() with .eq() — only sends changed fields
+    return sb.from('ingredients').update({
+      currentstock: item.physical,
+      openingstock: item.physical,
+      openingdate: bizday,
+      updatedat: new Date().toISOString()
+    }).eq('id', item.ingredient_id);
+  });
+
+  const results = await Promise.all(updatePromises);
+  const failed = results.filter(r => r.error);
+  if (failed.length > 0) {
+    toast('❌ Some stock updates failed: ' + failed[0].error.message, 'err');
+    return;
   }
 
-  DB.closing.unshift({ id:closingId, bizday, closedby, totalcost:totalCost });
+  DB.closing.unshift({ id: closingId, bizday, closedby, totalcost: totalCost });
   DB.closingItems.push(...items);
 
   closeM('m-closing');
@@ -2893,28 +2916,38 @@ function renderClosingReport() {
           </tr>
         </thead>
         <tbody id="closing-report-tbody">
-          ${items.map(i => `<tr>
+          ${items.map(i => `<tr data-item-id="${i.id}">
             <td style="font-weight:600;">${i.itemname}<br><span class="unit-pill">${i.unit}</span></td>
             <td style="text-align:center;color:#1e40af;">${fmtNum(i.opening,3)}</td>
             <td style="text-align:center;color:var(--success);">+${fmtNum(i.grntoday,3)}</td>
             <td style="text-align:center;font-weight:700;">${fmtNum(i.available,3)}</td>
-            <td style="text-align:center;color:var(--brand);font-weight:700;">${fmtNum(i.physical,3)}</td>
-            <td style="text-align:center;font-weight:900;color:var(--danger);">${fmtNum(i.consumed,3)}</td>
             <td style="text-align:center;">
               <input class="pos-input" type="number" step="0.001" min="0"
-                     id="pos_${i.id}" value="${fmtNum(i.posconsumed,3)}"
-                     oninput="calcPosDiff('${i.id}')"
-                     onchange="savePosConsumed('${i.id}')">
+                     id="phys_${i.id}" value="${fmtNum(i.physical,3)}"
+                     oninput="calcPhysicalDiff('${i.id}')"
+                     onchange="savePhysicalCount('${i.id}')"
+                     style="border-color:var(--crustify-red);background:#fff0f0;">
             </td>
+            <td style="text-align:center;font-weight:900;color:var(--danger);">
+              <span id="kc_${i.id}">${fmtNum(i.consumed,3)}</span>
+            </td>
+            <td style="text-align:center;">
+  <span class="pos-input" id="pos_${i.id}" style="display:inline-flex;align-items:center;justify-content:center;background:#f0f9ff;border:2px solid #bae6fd;color:#0891b2;font-weight:700;cursor:default;">
+    ${fmtNum(i.posconsumed,3)}
+  </span>
+</td>
             <td style="text-align:center;"><span id="diff_${i.id}" class="diff-badge"></span></td>
             <td style="text-align:center;">${fmtCurrency(i.costperunit)}</td>
-            <td style="text-align:right;font-weight:700;">${i.consumed>0 ? fmtCurrency(i.consumptioncost) : '—'}</td>
+            <td style="text-align:right;font-weight:700;" id="cost_${i.id}">${i.consumed>0 ? fmtCurrency(i.consumptioncost) : '—'}</td>
           </tr>`).join('')}
         </tbody>
       </table>
     </div>
   `;
-  items.forEach(i => calcPosDiff(i.id));
+  items.forEach(i => {
+    calcPosDiff(i.id);
+    calcPhysicalDiff(i.id);
+  });
 }
 
 function diffBadgeHTML(diff) {
@@ -2944,6 +2977,90 @@ async function savePosConsumed(itemId) {
   const { error } = await sb.from('closing_items').update({ posconsumed: posConsumed }).eq('id', itemId);
   if (error) { toast('❌ ' + error.message, 'err'); return; }
   calcPosDiff(itemId);
+}
+function calcPhysicalDiff(itemId) {
+  const item = DB.closingItems.find(i => i.id === itemId);
+  const physEl = document.getElementById('phys_' + itemId);
+  const kcEl = document.getElementById('kc_' + itemId);
+  const diffEl = document.getElementById('diff_' + itemId);
+  const costEl = document.getElementById('cost_' + itemId);
+  const posEl = document.getElementById('pos_' + itemId);
+  
+  if (!item || !physEl) return;
+  
+  const physical = safe(physEl.value);
+  const available = safe(item.available);
+  const rawDiff = available - physical;
+  const consumed = Math.max(0, rawDiff);
+  const posConsumed = posEl ? safe(posEl.value) : safe(item.posconsumed);
+  const diff = consumed - posConsumed;
+  const cost = consumed * safe(item.costperunit);
+  
+  if (kcEl) kcEl.textContent = fmtNum(consumed, 3);
+  if (diffEl) diffEl.outerHTML = diffBadgeHTML(diff).replace('class="diff-badge', 'id="diff_' + itemId + '" class="diff-badge');
+  if (costEl) costEl.textContent = consumed > 0 ? fmtCurrency(cost) : '—';
+}
+
+async function savePhysicalCount(itemId) {
+  const item = DB.closingItems.find(i => i.id === itemId);
+  const physEl = document.getElementById('phys_' + itemId);
+  if (!item || !physEl) return;
+  
+  const physical = safe(physEl.value);
+  const available = safe(item.available);
+  const rawDiff = available - physical;
+  const consumed = Math.max(0, rawDiff);
+  const variance = rawDiff < 0 ? Math.abs(rawDiff) : 0;
+  const cost = consumed * safe(item.costperunit);
+  
+  // Update local
+  item.physical = physical;
+  item.consumed = consumed;
+  item.variance = variance;
+  item.consumptioncost = cost;
+  
+  // Update DB
+  const { error } = await sb.from('closing_items').update({
+    physical: physical,
+    consumed: consumed,
+    variance: variance,
+    consumptioncost: cost
+  }).eq('id', itemId);
+  
+  if (error) {
+    toast('❌ ' + error.message, 'err');
+    return;
+  }
+  
+  // Recalc total cost for this closing
+  const allItems = DB.closingItems.filter(i => i.closing_id === item.closing_id);
+  const newTotal = allItems.reduce((s, i) => s + safe(i.consumptioncost), 0);
+  
+  await sb.from('closing').update({ totalcost: newTotal }).eq('id', item.closing_id);
+  
+  // Update local closing total
+  const closing = DB.closing.find(c => c.id === item.closing_id);
+  if (closing) closing.totalcost = newTotal;
+  
+  // Update ingredient stock
+  const ing = DB.ingredients.find(i => i.id === item.ingredient_id);
+  if (ing) {
+    ing.currentstock = physical;
+    ing.openingstock = physical;
+    await sb.from('ingredients').update({
+      currentstock: physical,
+      openingstock: physical,
+      updatedat: new Date().toISOString()
+    }).eq('id', item.ingredient_id);
+  }
+  
+  // Update total display
+  const totalVal = document.getElementById('closing-report-total-val');
+  if (totalVal) totalVal.textContent = fmtCurrency(newTotal);
+  
+  toast('✅ Physical count updated');
+  renderDashboard();
+  renderIngredients();
 }
 
 // ─────────────────────────────────────────────
