@@ -628,6 +628,10 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
   style="padding:7px 16px;border-radius:8px;background:rgba(192,57,43,0.15);border:1px solid rgba(192,57,43,0.3);color:var(--red);font-family:'Outfit',sans-serif;font-size:12px;font-weight:800;cursor:pointer;">
   🧹 Clear Data
 </button>
+<button onclick="clearAnalyticsAndSupabase()" 
+  style="padding:7px 16px;border-radius:8px;background:var(--red);color:white;border:none;font-family:'Outfit',sans-serif;font-size:12px;font-weight:800;cursor:pointer;box-shadow:0 3px 0 var(--dark-red);">
+  🧨 CLEAR ALL DATA
+</button>
 
   </div>
 </div>
@@ -6192,6 +6196,81 @@ function clearAnalyticsCache() {
   }
   
   showToast('✅ Analytics data cleared', 'success');
+}
+async function clearAnalyticsAndSupabase() {
+  if (!confirm('🧨 DELETE ALL ANALYTICS DATA\n\nThis will PERMANENTLY delete from Supabase:\n• All consumption records (pos_consumption)\n• All shift transactions\n• All shift reports\n• All shift closures\n• All opening balances\n\nYour recipes (item_recipes) and ingredients stay SAFE.\n\nThis CANNOT be undone. Continue?')) return;
+  
+  const pin = prompt('Enter Admin PIN:');
+  if (pin !== '1234' && pin !== '7530') {
+    showToast('Wrong PIN', 'error');
+    return;
+  }
+
+  if (!sb) {
+    showToast('Not connected to Supabase', 'error');
+    return;
+  }
+
+  showToast('Deleting from Supabase...', 'success');
+
+  try {
+    const today = todayKey();
+    
+    // Delete from Supabase
+    await Promise.all([
+      sb.from('pos_consumption').delete().eq('branch', activeBranch),
+      sb.from('shift_transactions').delete().eq('branch', activeBranch).eq('date', today),
+      sb.from('shift_reports').delete().eq('branch', activeBranch).eq('date', today),
+      sb.from('shift_closures').delete().eq('branch', activeBranch).eq('date', today),
+      sb.from('opening_balance').delete().eq('branch', activeBranch).eq('date', today),
+      sb.from('active_tables').delete().eq('branch', activeBranch)
+    ]);
+
+    // Clear browser memory too
+    _aTxData = [];
+    _aMonthlyMap = {};
+    completedOrders = [];
+    tableOrders = {};
+    openingBalance = 0;
+    cashInHand = 0;
+    salesTotal = 0;
+    billCounter = 1;
+
+    // Clear UI
+    document.getElementById('bar-cash').textContent = 'Rs 0';
+    document.getElementById('bar-billno').textContent = '001';
+    document.getElementById('opening-bal-input').value = '';
+
+    // Destroy charts
+    Object.keys(_aCharts).forEach(k => aDestroyChart(k));
+
+    // Reset all displays
+    document.getElementById('as-total').textContent = '—';
+    document.getElementById('as-bills').textContent = '—';
+    document.getElementById('as-avg').textContent = '—';
+    document.getElementById('as-cash').textContent = '—';
+    document.getElementById('as-card').textContent = '—';
+    document.getElementById('as-del').textContent = '—';
+    document.getElementById('as-disc').textContent = '—';
+    document.getElementById('as-sc').textContent = '—';
+    document.getElementById('a-top-body').innerHTML = '<tr><td colspan="5" style="text-align:center;padding:20px;color:#555d70;font-size:12px;">Click ↻ Load to fetch data</td></tr>';
+    document.getElementById('a-all-items-body').innerHTML = '<tr><td colspan="5" style="text-align:center;padding:20px;color:#555d70;font-size:12px;">Load data first</td></tr>';
+    document.getElementById('a-item-results').innerHTML = '';
+    document.getElementById('a-item-chart-wrap').style.display = 'none';
+    document.getElementById('a-monthly-grid').innerHTML = '';
+    document.getElementById('a-month-detail').style.display = 'none';
+    
+    const el = document.getElementById('a-consumption-content');
+    if (el) {
+      el.innerHTML = '<div style="text-align:center;padding:30px;color:#555d70;font-size:13px;">✅ All data deleted from Supabase and memory. Start fresh.</div>';
+    }
+
+    showToast('✅ All analytics data deleted from Supabase!', 'success');
+
+  } catch(e) {
+    showToast('Delete failed: ' + e.message, 'error');
+    console.error(e);
+  }
 }
 </script>
 <script defer src="https://static.cloudflareinsights.com/beacon.min.js/v8c78df7c7c0f484497ecbca7046644da1771523124516" integrity="sha512-8DS7rgIrAmghBFwoOTujcf6D9rXvH8xm8JQ1Ja01h9QX8EzXldiszufYa4IFfKdLUKTTrnSFXLDkUEOTrZQ8Qg==" data-cf-beacon='{"version":"2024.11.0","token":"80b7337066234d5c97e6656da5a7fef3","r":1,"server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous">
