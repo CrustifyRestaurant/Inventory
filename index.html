@@ -1709,6 +1709,10 @@ async function init() {
     toast('✅ Connected to Supabase');
     renderDashboard();
     renderIngredients();
+    renderBatches();
+    renderGRN();
+    renderClosingHistory();
+    renderExpenses();
   } catch(e) {
     setSyncStatus('err', 'Connection failed');
     toast('❌ ' + e.message, 'err');
