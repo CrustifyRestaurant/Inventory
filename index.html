@@ -8,6 +8,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.1/dist/umd/supabase.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
 <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
@@ -170,6 +171,13 @@ body{
 
 .stat-label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--mid);margin-bottom:6px;}
 .stat-val{font-family:'Plus Jakarta Sans',sans-serif;font-size:24px;font-weight:700;color:var(--dark);}
+/* ── DASHBOARD GRID ── */
+.dash-grid{display:grid;grid-template-columns:1.3fr 1fr;gap:20px;align-items:start;}
+.dash-col-charts{display:flex;flex-direction:column;gap:20px;}
+.dash-col-side{display:flex;flex-direction:column;gap:20px;}
+.chart-card{height:280px;display:flex;flex-direction:column;}
+.chart-card canvas{flex:1;max-height:220px;}
+@media(max-width:900px){ .dash-grid{grid-template-columns:1fr;} }
 
 /* ── TABLES ── */
 .tbl-wrap{overflow-x:auto;border-radius:10px;border:1px solid var(--border);}
@@ -258,7 +266,8 @@ tr:hover td{background:#fafafa;}
 }
 .alert-row.warn{background:#fffbeb;border-color:var(--warning);}
 .alert-row.bad{background:#fef2f2;border-color:var(--danger);}
-
+.alert-row.info{background:#eff6ff;border-color:#3b82f6;}
+.alert-row.variance{background:#ecfeff;border-color:#0891b2;}
 /* ── PROGRESS ── */
 .progress{height:4px;background:var(--border);border-radius:2px;margin-top:4px;overflow:hidden;}
 .progress-fill{height:100%;border-radius:2px;transition:width .3s;}
@@ -626,18 +635,65 @@ tr:hover td{background:#fafafa;}
     <div class="stat ok"><div class="stat-label">Inventory Value</div><div class="stat-val" id="s-val">—</div></div>
   </div>
 
-  <div class="card" id="dash-alerts-card">
-    <div class="card-header">
-      <span class="card-title"><i class="fas fa-exclamation-triangle" style="color:var(--warning);"></i> Stock Alerts</span>
+  <div class="dash-grid">
+    <div class="dash-col-charts">
+      <div class="card chart-card">
+        <div class="card-header"><span class="card-title"><i class="fas fa-chart-pie"></i> Stock Health</span></div>
+        <canvas id="chart-stock-health"></canvas>
+      </div>
+      <div class="card" id="low-stock-card">
+        <div class="card-header">
+          <span class="card-title"><i class="fas fa-arrow-down"></i> Low / Out of Stock — Active Items</span>
+          <button class="btn btn-outline btn-sm" id="low-stock-toggle" onclick="toggleLowStockList()" style="display:none;">Show all</button>
+        </div>
+        <div id="low-stock-list"></div>
+      </div>
+      <div class="card chart-card">
+        <div class="card-header"><span class="card-title"><i class="fas fa-chart-line"></i> Consumption Cost — Last 14 Days</span></div>
+        <canvas id="chart-consumption-trend"></canvas>
+      </div>
     </div>
-    <div id="dash-alerts"><div class="empty"><i class="fas fa-check-circle" style="color:var(--success);"></i><p>All stock levels are normal</p></div></div>
-  </div>
 
-  <div class="card">
-    <div class="card-header">
-      <span class="card-title"><i class="fas fa-moon" style="color:var(--brand);"></i> Recent Closings</span>
+    <div class="dash-col-side">
+      <div class="card" id="dash-insights-card">
+        <div class="card-header">
+          <span class="card-title"><i class="fas fa-lightbulb" style="color:var(--warning);"></i> Today &amp; Ahead</span>
+        </div>
+
+        <div id="today-activity-summary" style="margin-bottom:18px;"></div>
+
+        <div style="border-top:1px solid var(--border);padding-top:14px;margin-bottom:18px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+            <strong style="font-size:13px;color:var(--dark);"><i class="fas fa-clock" style="color:#3b82f6;"></i> Approaching Reorder Point</strong>
+            <button class="btn btn-outline btn-sm" id="approaching-toggle" onclick="toggleApproaching()" style="display:none;">Show all</button>
+          </div>
+          <div id="approaching-list"></div>
+        </div>
+
+        <div style="border-top:1px solid var(--border);padding-top:14px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+            <strong style="font-size:13px;color:var(--dark);"><i class="fas fa-exclamation-circle" style="color:#0891b2;"></i> Unexplained Variance</strong>
+            <button class="btn btn-outline btn-sm" id="variance-toggle" onclick="toggleVariance()" style="display:none;">Show all</button>
+          </div>
+          <div id="variance-list"></div>
+        </div>
+      </div>
+
+      <div class="card chart-card">
+        <div class="card-header"><span class="card-title"><i class="fas fa-layer-group"></i> Inventory Value by Category</span></div>
+        <canvas id="chart-category-value"></canvas>
+      </div>
+
+      <div class="card chart-card">
+        <div class="card-header"><span class="card-title"><i class="fas fa-fire"></i> Top 5 Consumed Ingredients (30d)</span></div>
+        <canvas id="chart-top-consumed"></canvas>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><span class="card-title"><i class="fas fa-moon"></i> Recent Closings</span></div>
+        <div id="dash-recent-closing"><div class="empty"><i class="fas fa-moon"></i><p>No closing records yet</p></div></div>
+      </div>
     </div>
-    <div id="dash-recent-closing"><div class="empty"><i class="fas fa-moon"></i><p>No closing records yet</p></div></div>
   </div>
 </div>
 
@@ -1416,6 +1472,15 @@ const SB_KEY  = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsIn
 // ─────────────────────────────────────────────
 let sb = null;
 let DB = { ingredients: [], grn: [], grnItems: [], closing: [], closingItems: [], batches: [], batchItems: [] };
+let _charts = {};
+let _dashAlertsExpanded = false;
+let _dashAlertsFullHTML = [];
+let _lowStockExpanded = false;
+let _lowStockFullHTML = [];
+let _approachingExpanded = false;
+let _approachingFullHTML = [];
+let _varianceExpanded = false;
+let _varianceFullHTML = [];
 
 // ─────────────────────────────────────────────
 // BUSINESS DAY HELPER
@@ -1553,7 +1618,7 @@ async function loadAll() {
 // DASHBOARD
 // ─────────────────────────────────────────────
 function renderDashboard() {
-  const ings = DB.ingredients;
+  const ings = DB.ingredients.filter(i => i.is_active !== false);
   const total  = ings.length;
   const low    = ings.filter(i => { const s=stockStatus(i); return s.lv==='low'; }).length;
   const out    = ings.filter(i => { const s=stockStatus(i); return s.lv==='out'; }).length;
@@ -1564,33 +1629,9 @@ function renderDashboard() {
   document.getElementById('s-out').textContent   = out;
   document.getElementById('s-val').textContent   = fmtCurrency(val);
 
-  const alertDiv = document.getElementById('dash-alerts');
-  const critical = ings.filter(i => stockStatus(i).lv !== 'ok');
-  if (critical.length === 0) {
-    alertDiv.innerHTML = `<div class="empty"><i class="fas fa-check-circle" style="color:var(--success);"></i><p>All stock levels normal</p></div>`;
-  } else {
-    alertDiv.innerHTML = critical.map(ing => {
-      const s = stockStatus(ing);
-      return `<div class="alert-row ${s.lv==='out'?'bad':'warn'}">
-        <div>
-          <strong>${ing.name}</strong>
-          <div style="font-size:12px;color:var(--mid);">${catLabel(ing.category)} · Min: ${fmtNum(ing.minlevel)} ${ing.unit}</div>
-        </div>
-        <div style="text-align:right;">
-          <div style="font-family:Plus Jakarta Sans,sans-serif;font-size:18px;font-weight:800;">${fmtNum(ing.currentstock)} ${ing.unit}</div>
-          <span class="badge ${s.cls}">${s.label}</span>
-        </div>
-      </div>`;
-    }).join('');
-  }
-  const varianceItems = DB.closingItems.filter(i => safe(i.variance) > 0 && DB.closing.some(c => c.id === i.closing_id && c.bizday === DB.closing[0]?.bizday));
-  if (varianceItems.length > 0) {
-    alertDiv.innerHTML += varianceItems.map(v => `
-      <div class="alert-row warn" style="border-color:#f59e0b;">
-        <div><strong>${v.itemname}</strong><div style="font-size:12px;color:var(--mid);">Physical count exceeded available stock</div></div>
-        <div style="text-align:right;"><span class="badge badge-warn">+${fmtNum(v.variance,3)} ${v.unit} unexplained</span></div>
-      </div>`).join('');
-  }
+  renderTodayActivity();
+  renderApproachingReorder();
+  renderVarianceAlerts();
 
   const rcDiv = document.getElementById('dash-recent-closing');
   if (DB.closing.length === 0) {
@@ -1599,7 +1640,7 @@ function renderDashboard() {
     rcDiv.innerHTML = `<div class="tbl-wrap"><table>
       <thead><tr><th>Business Day</th><th>Closed By</th><th>Items</th><th>Consumption Cost</th></tr></thead>
       <tbody>
-        ${DB.closing.slice(0,5).map(c=>{
+        ${DB.closing.slice(0,3).map(c=>{
           const items = DB.closingItems.filter(i=>i.closing_id===c.id);
           return `<tr>
             <td><span class="day-badge"><i class="fas fa-moon"></i>${fmtDate(c.bizday)}</span></td>
@@ -1611,6 +1652,240 @@ function renderDashboard() {
       </tbody>
     </table></div>`;
   }
+  renderDashCharts();
+}
+
+
+function toggleLowStockList() {
+  _lowStockExpanded = !_lowStockExpanded;
+  renderLowStockList();
+}
+
+function renderLowStockList() {
+  const div = document.getElementById('low-stock-list');
+  const btn = document.getElementById('low-stock-toggle');
+  if (!_lowStockFullHTML.length) {
+    div.innerHTML = `<div class="empty"><i class="fas fa-check-circle" style="color:var(--success);"></i><p>No active items low on stock</p></div>`;
+    btn.style.display = 'none';
+    return;
+  }
+  const shown = _lowStockExpanded ? _lowStockFullHTML : _lowStockFullHTML.slice(0,5);
+  div.innerHTML = shown.join('');
+  if (_lowStockFullHTML.length > 5) {
+    btn.style.display = 'inline-flex';
+    btn.textContent = _lowStockExpanded ? 'Show less' : `Show all (${_lowStockFullHTML.length})`;
+  } else {
+    btn.style.display = 'none';
+  }
+}
+function renderTodayActivity() {
+  const today = bizDayToday();
+  const div = document.getElementById('today-activity-summary');
+  if (!div) return;
+
+  const grnToday = DB.grn.filter(g => g.bizday === today);
+  const grnTotal = grnToday.reduce((s,g) => s + safe(g.grandtotal), 0);
+  const grnSuppliers = new Set(grnToday.map(g => g.supplier)).size;
+
+  const closingToday = DB.closing.find(c => c.bizday === today);
+
+  div.innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+      <div style="background:#f0fdf4;border-radius:10px;padding:12px;border:2px solid #d1fae5;">
+        <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#059669;margin-bottom:4px;">GRN Today</div>
+        <div style="font-family:'Plus Jakarta Sans',sans-serif;font-size:18px;font-weight:800;">${fmtCurrency(grnTotal)}</div>
+        <div style="font-size:11px;color:var(--mid);">${grnToday.length} deliveries · ${grnSuppliers} suppliers</div>
+      </div>
+      <div style="background:${closingToday?'#fef2f2':'#f8f9fb'};border-radius:10px;padding:12px;border:2px solid ${closingToday?'#fecaca':'var(--border)'};">
+        <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:${closingToday?'#991b1b':'var(--mid)'};margin-bottom:4px;">Consumption Today</div>
+        <div style="font-family:'Plus Jakarta Sans',sans-serif;font-size:18px;font-weight:800;">${closingToday ? fmtCurrency(closingToday.totalcost) : '—'}</div>
+        <div style="font-size:11px;color:var(--mid);">${closingToday ? 'Closed by ' + closingToday.closedby : 'Not closed yet'}</div>
+      </div>
+    </div>
+  `;
+}
+
+function toggleApproaching() {
+  _approachingExpanded = !_approachingExpanded;
+  renderApproachingList();
+}
+
+function renderApproachingReorder() {
+  const activeIngs = DB.ingredients.filter(i => i.is_active !== false);
+  const approaching = activeIngs
+    .filter(i => {
+      const s = stockStatus(i);
+      const min = safe(i.minlevel);
+      if (s.lv !== 'ok' || min <= 0) return false;
+      return safe(i.currentstock) <= min * 1.3;
+    })
+    .map(i => ({ name: i.name, stock: safe(i.currentstock), min: safe(i.minlevel), unit: i.unit }))
+    .sort((a,b) => (a.stock - a.min) - (b.stock - b.min));
+
+  _approachingFullHTML = approaching.map(i => `
+    <div class="alert-row info">
+      <div>
+        <strong>${i.name}</strong>
+        <div style="font-size:12px;color:var(--mid);">${fmtNum(i.stock,2)} ${i.unit} on hand · Min ${fmtNum(i.min,2)} ${i.unit}</div>
+      </div>
+      <div style="text-align:right;">
+        <span class="badge badge-info">Reorder soon</span>
+      </div>
+    </div>
+  `);
+  renderApproachingList();
+}
+
+function renderApproachingList() {
+  const div = document.getElementById('approaching-list');
+  const btn = document.getElementById('approaching-toggle');
+  if (!div || !btn) return;
+  if (!_approachingFullHTML.length) {
+    div.innerHTML = `<div style="font-size:12px;color:var(--mid);padding:8px 0;">Nothing approaching its reorder point right now.</div>`;
+    btn.style.display = 'none';
+    return;
+  }
+  const shown = _approachingExpanded ? _approachingFullHTML : _approachingFullHTML.slice(0,5);
+  div.innerHTML = shown.join('');
+  if (_approachingFullHTML.length > 5) {
+    btn.style.display = 'inline-flex';
+    btn.textContent = _approachingExpanded ? 'Show less' : `Show all (${_approachingFullHTML.length})`;
+  } else {
+    btn.style.display = 'none';
+  }
+}
+
+function toggleVariance() {
+  _varianceExpanded = !_varianceExpanded;
+  renderVarianceList();
+}
+
+function renderVarianceAlerts() {
+  const latestBizday = DB.closing[0]?.bizday;
+  const varianceItems = DB.closingItems.filter(i => safe(i.variance) > 0 && DB.closing.some(c => c.id === i.closing_id && c.bizday === latestBizday));
+
+  _varianceFullHTML = varianceItems.map(v => `
+    <div class="alert-row variance">
+      <div>
+        <strong>${v.itemname}</strong>
+        <div style="font-size:12px;color:var(--mid);">Physical count exceeded available stock</div>
+      </div>
+      <div style="text-align:right;">
+        <span class="badge" style="background:#cffafe;color:#0e7490;">+${fmtNum(v.variance,3)} ${v.unit} unexplained</span>
+      </div>
+    </div>
+  `);
+  renderVarianceList();
+}
+
+function renderVarianceList() {
+  const div = document.getElementById('variance-list');
+  const btn = document.getElementById('variance-toggle');
+  if (!div || !btn) return;
+  if (!_varianceFullHTML.length) {
+    div.innerHTML = `<div style="font-size:12px;color:var(--mid);padding:8px 0;">No unexplained variance in the latest closing.</div>`;
+    btn.style.display = 'none';
+    return;
+  }
+  const shown = _varianceExpanded ? _varianceFullHTML : _varianceFullHTML.slice(0,5);
+  div.innerHTML = shown.join('');
+  if (_varianceFullHTML.length > 5) {
+    btn.style.display = 'inline-flex';
+    btn.textContent = _varianceExpanded ? 'Show less' : `Show all (${_varianceFullHTML.length})`;
+  } else {
+    btn.style.display = 'none';
+  }
+}
+
+function renderDashCharts() {
+  if (typeof Chart === 'undefined') return;
+
+  const activeIngs = DB.ingredients.filter(i => i.is_active !== false);
+const ok  = activeIngs.filter(i=>stockStatus(i).lv==='ok').length;
+const low = activeIngs.filter(i=>stockStatus(i).lv==='low').length;
+const out = activeIngs.filter(i=>stockStatus(i).lv==='out').length;
+  if (_charts.health) _charts.health.destroy();
+  _charts.health = new Chart(document.getElementById('chart-stock-health'), {
+    type: 'doughnut',
+    data: { labels: ['Normal','Low Stock','Stock Out'],
+      datasets: [{ data:[ok,low,out], backgroundColor:['#059669','#d97706','#dc2626'], borderWidth:0 }] },
+    options: { responsive:true, maintainAspectRatio:false, plugins:{ legend:{ position:'bottom', labels:{ boxWidth:12, font:{size:11} } } } }
+  });
+  const lowStockItems = activeIngs
+    .filter(i => stockStatus(i).lv !== 'ok')
+    .map(i => {
+      const stock = safe(i.currentstock);
+      const min   = safe(i.minlevel);
+      const short = min - stock;
+      return { name: i.name, stock, min, unit: i.unit, lv: stockStatus(i).lv, short };
+    })
+    .sort((a,b) => {
+      if (a.lv !== b.lv) return a.lv === 'out' ? -1 : 1;
+      return b.short - a.short;
+    });
+
+  _lowStockFullHTML = lowStockItems.map(i => `
+    <div class="alert-row ${i.lv==='out'?'bad':'warn'}">
+      <div>
+        <strong>${i.name}</strong>
+        <div style="font-size:12px;color:var(--mid);">
+          ${i.lv==='out' ? 'Out of stock' : `Short by ${fmtNum(i.short,2)} ${i.unit}`}
+        </div>
+      </div>
+      <div style="text-align:right;">
+        <div style="font-family:'Plus Jakarta Sans',sans-serif;font-size:16px;font-weight:800;">
+          ${fmtNum(i.stock,2)} <span style="font-size:11px;font-weight:600;color:var(--mid);">/ ${fmtNum(i.min,2)} ${i.unit}</span>
+        </div>
+        <span class="badge ${i.lv==='out'?'badge-bad':'badge-warn'}">${i.lv==='out'?'Stock Out':'Low Stock'}</span>
+      </div>
+    </div>
+  `);
+  renderLowStockList();
+
+  const catTotals = {};
+  DB.ingredients.forEach(i => {
+    const v = safe(i.currentstock) * safe(i.costperunit);
+    catTotals[i.category] = (catTotals[i.category]||0) + v;
+  });
+  const catEntries = Object.entries(catTotals).sort((a,b)=>b[1]-a[1]).slice(0,8);
+  if (_charts.category) _charts.category.destroy();
+  _charts.category = new Chart(document.getElementById('chart-category-value'), {
+    type: 'bar',
+    data: { labels: catEntries.map(e=>catLabel(e[0])),
+      datasets: [{ data: catEntries.map(e=>e[1]), backgroundColor:'#8b0000', borderRadius:4 }] },
+    options: { indexAxis:'y', responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label: ctx => fmtCurrency(ctx.parsed.x) } } },
+      scales:{ x:{ ticks:{ callback:v=>'Rs '+v } } } }
+  });
+
+  const trendClosings = [...DB.closing].sort((a,b)=>a.bizday.localeCompare(b.bizday)).slice(-14);
+  if (_charts.trend) _charts.trend.destroy();
+  _charts.trend = new Chart(document.getElementById('chart-consumption-trend'), {
+    type: 'line',
+    data: { labels: trendClosings.map(c=>fmtDate(c.bizday)),
+      datasets: [{ data: trendClosings.map(c=>safe(c.totalcost)), borderColor:'#c81010', backgroundColor:'rgba(200,16,16,0.1)', fill:true, tension:0.3, pointRadius:3 }] },
+    options: { responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label: ctx => fmtCurrency(ctx.parsed.y) } } },
+      scales:{ y:{ ticks:{ callback:v=>'Rs '+v } } } }
+  });
+
+  const cutoff = new Date(); cutoff.setDate(cutoff.getDate()-30);
+  const cutoffStr = cutoff.toISOString().slice(0,10);
+  const recentClosingIds = new Set(DB.closing.filter(c=>c.bizday>=cutoffStr).map(c=>c.id));
+  const consTotals = {};
+  DB.closingItems.filter(i=>recentClosingIds.has(i.closing_id)).forEach(i=>{
+    consTotals[i.itemname] = (consTotals[i.itemname]||0) + safe(i.consumptioncost);
+  });
+  const topConsumed = Object.entries(consTotals).sort((a,b)=>b[1]-a[1]).slice(0,5);
+  if (_charts.topConsumed) _charts.topConsumed.destroy();
+  _charts.topConsumed = new Chart(document.getElementById('chart-top-consumed'), {
+    type: 'bar',
+    data: { labels: topConsumed.map(e=>e[0]),
+      datasets: [{ data: topConsumed.map(e=>e[1]), backgroundColor:'#ffd700', borderRadius:4 }] },
+    options: { responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label: ctx => fmtCurrency(ctx.parsed.y) } } },
+      scales:{ y:{ ticks:{ callback:v=>'Rs '+v } } } }
+  });
 }
 
 // ─────────────────────────────────────────────
