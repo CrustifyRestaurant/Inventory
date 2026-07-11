@@ -150,6 +150,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
 .order-actions-2{display:grid;grid-template-columns:1fr;gap:5px;}
 .oa-btn{padding:10px;border-radius:9px;border:none;font-family:'Outfit',sans-serif;font-size:12px;font-weight:800;letter-spacing:.5px;text-transform:uppercase;cursor:pointer;transition:.15s;}
 .oa-btn:active{transform:translateY(1px);}
+.oa-btn:disabled{opacity:.4;cursor:not-allowed;pointer-events:none;}
 .oa-void{background:rgba(192,57,43,0.15);color:var(--red);border:1px solid rgba(192,57,43,0.3);}
 .oa-send{background:var(--red);color:white;box-shadow:0 3px 0 var(--dark-red);}
 .oa-send:active{transform:translateY(2px);box-shadow:0 1px 0 var(--dark-red);}
@@ -670,7 +671,6 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
             <div class="legend-item"><div class="legend-dot" style="background:var(--red)"></div>Occupied</div>
             <div class="legend-item"><div class="legend-dot" style="background:var(--orange)"></div>20m+</div>
             <div class="legend-item"><div class="legend-dot" style="background:#ff0000"></div>Late</div>
-            <div class="legend-item"><div class="legend-dot" style="background:var(--gold)"></div>⚡ Needs Confirm</div>
           </div>
         </div>
         <div style="display:flex;gap:7px;align-items:center;">
@@ -784,11 +784,11 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
     <button class="oa-btn" style="background:rgba(212,175,55,0.15);color:var(--gold);border:1px solid rgba(212,175,55,0.3);" onclick="changeTablePrompt()">🔀 Move</button>
   </div>
   <div style="margin-top:5px;display:grid;grid-template-columns:1fr 1fr;gap:6px;">
-    <button class="oa-btn" style="background:rgba(41,128,185,0.15);color:#5dade2;border:1px solid rgba(41,128,185,0.3);font-size:13px;padding:13px;" onclick="printBillOnly()">🖨️ Print Bill</button>
+    <button class="oa-btn" id="print-bill-btn" style="background:rgba(41,128,185,0.15);color:#5dade2;border:1px solid rgba(41,128,185,0.3);font-size:13px;padding:13px;" onclick="printBillOnly()">🖨️ Print Bill</button>
     <button class="oa-btn oa-pay" style="font-size:13px;padding:13px;display:block;" id="collect-btn" onclick="openPayModal()">✅ Collect & Clear</button>
   </div>
   <div id="takeaway-paid-btn-wrap" style="display:none;margin-top:6px;">
-    <button class="oa-btn" style="width:100%;padding:13px;font-size:14px;background:var(--green);color:white;box-shadow:0 3px 0 var(--dark-green);" onclick="markTakeawayPaid()">💵 Collect Payment & Print Slip</button>
+    <button class="oa-btn" id="takeaway-pay-btn" style="width:100%;padding:13px;font-size:14px;background:var(--green);color:white;box-shadow:0 3px 0 var(--dark-green);" onclick="markTakeawayPaid()">💵 Collect Payment & Print Slip</button>
   </div>
 </div>
 </div>
@@ -2077,137 +2077,10 @@ window._resolveConflict = function(action, targetSlot, originalSlot) {
   }
 };
 async function pollWebOrders() {
-  if (!sb) return;
-
-  try {
-    const { data, error } = await sb.from('kitchen_orders')
-      .select('id, type, location, status, subtotal, delivery_fee, created_at, customer_name, phone, source')
-      .eq('branch', activeBranch)
-      .or('status.eq.WAITING,status.eq.PREPARING,and(status.eq.READY,type.eq.Dine-In),and(status.eq.READY,type.eq.Takeaway),and(status.eq.READY,type.eq.Delivery)')
-      .order('created_at', { ascending: false })
-      .limit(50);
-
-    if (error || !data) return;
-
-    const dbOrderIds = new Set(data.map(o => o.id));
-
-    if (Date.now() - _paidIdsCacheTime > 15 * 60 * 1000) {
-      const { data: paidTx } = await sb.from('shift_transactions')
-        .select('kitchen_order_id')
-        .eq('date', todayKey())
-        .eq('branch', activeBranch)
-        .not('kitchen_order_id', 'is', null);
-
-      _cachedPaidIds = new Set((paidTx || []).map(t => t.kitchen_order_id));
-      _paidIdsCacheTime = Date.now();
-    }
-
-    const dbPaidIds = _cachedPaidIds;
-
-    // Clean up stale table orders
-    for (const tname in tableOrders) {
-      const order = tableOrders[tname];
-      if (order.fromWeb && order.id && (!dbOrderIds.has(order.id) || dbPaidIds.has(order.id))) {
-        delete tableOrders[tname];
-        _saveActiveTable(tname, null);
-      }
-    }
-
-    const newPending = [];
-
-    data.forEach(order => {
-      const loc = (order.location || '').trim();
-      const orderType = order.type || 'Dine-In';
-
-      let tableId = ALL_TABLE_IDS.find(t => {
-        const tNorm = t.toLowerCase().replace(/-/g, '');
-        const locNorm = loc.toLowerCase().replace(/-/g, '').replace(/^table\s*/i, '').trim();
-        return tNorm === locNorm;
-      });
-
-      // Takeaway / Car Dine handling
-      if (!tableId && (
-        orderType === 'Takeaway' ||
-        loc.toLowerCase() === 'takeaway' ||
-        loc.toLowerCase().startsWith('car dine') ||
-        loc.toLowerCase().startsWith('car-dine')
-      )) {
-        tableId = TABLES['Takeaway'].find(t =>
-          !tableOrders[t] || tableOrders[t].webOrderId === order.id
-        );
-      }
-
-      // POS Delivery orders are managed via DEL tables only — never re-import
-      if (order.source === 'POS' && order.type === 'Delivery') return;
-
-      if (!tableId) return;
-      if (voidedOrderIds.has(order.id)) return;
-      if (dbPaidIds.has(order.id)) return;
-
-      const existing = tableOrders[tableId];
-
-      // Skip if already correctly loaded from web
-      if (existing && existing.webOrderId === order.id) return;
-
-      // ── TABLE CONFLICT ──────────────────────────────────────────────
-      // A web order wants a slot that already has a manually created POS order.
-      // Instead of silently ignoring, show the cashier a modal to decide.
-      if (existing && !existing.fromWeb) {
-        const parsedItems = parseItemsFromText(order.items || '', order.subtotal, orderType === 'Dine-In');
-        const newWebOrder = {
-          table: tableId, type: orderType, items: parsedItems,
-          startTime: new Date(order.created_at).getTime(),
-          id: order.id, webOrderId: order.id, fromWeb: true,
-          confirmed: order.status === 'PREPARING' || order.status === 'READY',
-          rawItems: order.items, subtotal: order.subtotal,
-          customerName: order.customer_name || '', customerPhone: order.phone || '',
-          scEnabled: true, scPct: 7
-        };
-        // Only show the modal once per order ID
-        if (window._conflictShownFor !== order.id) {
-          window._conflictShownFor = order.id;
-          showTableConflictModal(tableId, newWebOrder, existing);
-        }
-        return;
-      }
-      // ───────────────────────────────────────────────────────────────
-
-      // Skip READY Takeaway/Car orders that haven't been accepted yet
-      if ((orderType === 'Takeaway' || loc.toLowerCase().startsWith('car'))
-          && order.status === 'READY'
-          && !existing) return;
-
-      const isDineIn = orderType === 'Dine-In';
-      const parsedItems = parseItemsFromText(order.items || '', order.subtotal, isDineIn);
-
-      tableOrders[tableId] = {
-  table: tableId, type: orderType, items: [],
-  startTime: new Date(order.created_at).getTime(),
-  id: order.id, webOrderId: order.id, fromWeb: true,
-  confirmed: order.status === 'PREPARING' || order.status === 'READY',
-  rawItems: null, subtotal: order.subtotal,
-  customerName: order.customer_name || '', customerPhone: order.phone || '',
-  scEnabled: true, scPct: 7
-};
-
-      if (order.status === 'WAITING' && !newPending.find(p => p.id === order.id)) {
-        newPending.push({ ...order, tableId });
-      }
-    });
-
-    pendingWebOrders = newPending;
-    updatePendingBadges();
-    renderTableMap();
-
-    // Use already-fetched data instead of a separate query
-    const deliveryCount = (data || []).filter(o => o.type === 'Delivery').length;
-    const badge = document.getElementById('badge-delivery');
-    if (deliveryCount > 0) { badge.textContent = deliveryCount; badge.classList.add('show'); }
-    else { badge.classList.remove('show'); }
-
-  } catch(e) {
-    console.error('pollWebOrders:', e);
-  }
+  // Online/QR customer ordering is disabled for this restaurant — every
+  // order is manually punched in by staff, so a web order can never land
+  // on an already-occupied table. This is now a permanent no-op.
+  return;
 }
 
 function parseItemsFromText(text, knownSubtotal, isDineIn) {
@@ -2589,6 +2462,16 @@ if (currentOrder.paid && isTakeaway) {
 
   renderOrderItems();
   renderMenu();
+  updateActionButtonsState();
+}
+function updateActionButtonsState() {
+  const sentToKitchen = !!currentOrder.id;
+  ['print-bill-btn', 'collect-btn', 'takeaway-pay-btn'].forEach(id => {
+    const btn = document.getElementById(id);
+    if (!btn) return;
+    btn.disabled = !sentToKitchen;
+    btn.title = sentToKitchen ? '' : 'Send to kitchen first';
+  });
 }
 
 // ══════════════════════════════════
@@ -3365,7 +3248,7 @@ async function sendToKitchen() {
       await sbWrite('kitchen_orders', 'update',
         { items:itemsText, subtotal:grand, delivery_fee:updDelCharge, location:updDelAddr||currentOrder.table||currentOrder.type, customer_name:custName||null, phone:custPhone||null, source:'POS' },
         { eq:[['id', currentOrder.id]] });
-      saveTableOrder(); showToast('Kitchen updated! 🔥','success'); return;
+      saveTableOrder(); updateActionButtonsState(); showToast('Kitchen updated! 🔥','success'); return;
     } catch(e) {}
   }
 
@@ -3380,7 +3263,7 @@ async function sendToKitchen() {
   try {
     const res = await sbWrite('kitchen_orders', 'insert', [obj]);
     if (res && res.data && res.data[0]) { currentOrder.id = res.data[0].id; }
-    saveTableOrder(); showToast('Sent to kitchen! 🔥','success');
+    saveTableOrder(); updateActionButtonsState(); showToast('Sent to kitchen! 🔥','success');
   } catch(e) { showToast('Kitchen send failed — saved locally','error'); console.error(e); }
 }
 function printBillOnly() {
@@ -3722,10 +3605,16 @@ items_text: sale.items.map(i => `${i.qty}x ${i.name}`).join(', ') + sale.riderTa
 // ══════════════════════════════════
 // PRINT
 // ══════════════════════════════════
-function printKitchenTicket() {
+async function printKitchenTicket() {
   if (!currentOrder.items.length) { showToast('No items to print', 'error'); return; }
 
   saveTableOrder();
+
+  // Ensure the order is actually in kitchen_orders BEFORE we let the
+  // cashier proceed to Print Bill / Collect & Clear.
+  if (!currentOrder.id && currentOrder.type !== 'Delivery') {
+    await sendToKitchen();
+  }
 
   const type = currentOrder.type;
   const table = (currentOrder.table || '').replace(/-/g, ' ');
@@ -3811,12 +3700,9 @@ function printKitchenTicket() {
   setTimeout(() => {
     window.print();
     document.getElementById('print-area').innerHTML = '';
-    switchView('tables');
-    renderTableMap();
+    updateActionButtonsState();
     showToast('Kitchen ticket printed 🔥', 'success');
   }, 300);
-
-  if (!currentOrder.id && currentOrder.type !== 'Delivery') sendToKitchen();
 }
 
 function printReceipt(sale, isSplit=false) {
