@@ -852,7 +852,7 @@ tr:hover td{background:#fafafa;}
   </div>
 
   <!-- History -->
-  <div class="card">
+  <div class="card" id="closing-history-card">
     <div class="card-header"><span class="card-title">Closing History</span></div>
     <div id="closing-history-list"><div class="empty"><i class="fas fa-history"></i><p>No closing history</p></div></div>
   </div>
@@ -1330,6 +1330,7 @@ tr:hover td{background:#fafafa;}
           <label><input type="checkbox" id="nu-perm-manageusers"> Manage Users</label>
           <label><input type="checkbox" id="nu-perm-batches" checked> Batches</label>
           <label><input type="checkbox" id="nu-perm-delete"> 🔒 Can Delete Records (GRN/Closing/Batch)</label>
+          <label><input type="checkbox" id="nu-perm-closinghistory" checked> 📊 Can View Closing History (costs)</label>
         </div>
       </div>
       <button class="btn btn-primary" style="width:100%;margin-bottom:20px;" onclick="createUser()">
@@ -4148,6 +4149,9 @@ function applyRolePermissions() {
 
   document.getElementById('btn-manage-users').style.display = perms['manage_users'] ? 'inline-flex' : 'none';
 
+  const historyCard = document.getElementById('closing-history-card');
+  if (historyCard) historyCard.style.display = perms['view_closing_history'] === false ? 'none' : '';
+
   let firstAllowedBtn = null;
   document.querySelectorAll('.nav-btn').forEach(btn => {
     const tab = btn.dataset.tab;
@@ -4211,6 +4215,7 @@ async function renderUsers() {
           <label><input type="checkbox" id="perm_${u.id}_manage_users" ${p['manage_users']?'checked':''}> Manage Users</label>
           <label><input type="checkbox" id="perm_${u.id}_t-batches" ${p['t-batches']?'checked':''}> Batches</label>
           <label><input type="checkbox" id="perm_${u.id}_delete_records" ${p['delete_records']?'checked':''}> 🔒 Can Delete Records</label>
+          <label><input type="checkbox" id="perm_${u.id}_view_closing_history" ${p['view_closing_history']!==false?'checked':''}> 📊 Can View Closing History</label>
         </div>
         <button class="btn btn-sm btn-purple" onclick="saveUserPermissions('${u.id}')"><i class="fas fa-save"></i> Save Access</button>
       </td>
@@ -4233,6 +4238,7 @@ async function saveUserPermissions(id) {
     'manage_users':  document.getElementById(`perm_${id}_manage_users`).checked,
     't-batches':     document.getElementById(`perm_${id}_t-batches`).checked,
     'delete_records': document.getElementById(`perm_${id}_delete_records`).checked,
+    'view_closing_history': document.getElementById(`perm_${id}_view_closing_history`).checked,
   };
   const { error } = await sb.from('app_users').update({ permissions }).eq('id', id);
   if (error) { toast('❌ ' + error.message, 'err'); return; }
@@ -4255,6 +4261,7 @@ async function createUser() {
     'manage_users':  document.getElementById('nu-perm-manageusers').checked,
     't-batches':     document.getElementById('nu-perm-batches').checked,
     'delete_records': document.getElementById('nu-perm-delete').checked,
+    'view_closing_history': document.getElementById('nu-perm-closinghistory').checked,
   };
 
   const { error } = await sb.from('app_users').insert({
