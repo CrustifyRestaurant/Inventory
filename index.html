@@ -3841,7 +3841,7 @@ function openOpeningStock() {
 
 function populateOpeningTable() {
   const tbody = document.getElementById('op-tbody');
-  tbody.innerHTML = DB.ingredients.map(ing=>`
+  tbody.innerHTML = DB.ingredients.filter(ing => ing.is_active !== false).map(ing=>`
     <tr data-name="${ing.name.toLowerCase()}">
       <td style="font-weight:600;">${ing.name}</td>
       <td><span class="unit-pill">${ing.unit}</span></td>
@@ -3897,7 +3897,7 @@ async function saveOpeningStock() {
 function populateBulkMinCat() {
   const sel = document.getElementById('bulk-min-cat');
   if (!sel) return;
-  const cats = [...new Set(DB.ingredients.map(i=>i.category))].sort();
+  const cats = [...new Set(DB.ingredients.filter(i => i.is_active !== false).map(i=>i.category))].sort();
   sel.innerHTML = '<option value="">All Categories</option>' +
     cats.map(c=>`<option value="${c}">${catLabel(c)}</option>`).join('');
 }
