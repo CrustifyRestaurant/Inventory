@@ -420,17 +420,24 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
 }
 #print-area{display:none;}
 @media print {
+  html, body {
+    width: 80mm !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
   body > *:not(#print-area) { display: none !important; }
   #print-area {
     display: block !important;
-    width: 72mm;
+    width: 76mm !important;
+    margin: 0 auto !important;
   }
   #print-area * {
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
+    box-sizing: border-box;
   }
   @page {
-    size: 80mm auto;
+    size: 80mm 3000mm;
     margin: 0;
   }
 }
@@ -5577,8 +5584,8 @@ let _aCharts = {};
 let _invIngredients = [];
 async function loadInvIngredients() {
   if (!sb) return;
-  const { data } = await sb.from('ingredients').select('id,name,unit');
-  _invIngredients = data || [];
+  const { data } = await sb.from('ingredients').select('id,name,unit,is_active');
+  _invIngredients = (data || []).filter(i => i.is_active !== false);
 }
 
 function toggleAnalyticsPanel() {
