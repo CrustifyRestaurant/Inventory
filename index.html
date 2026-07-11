@@ -2517,12 +2517,16 @@ async function saveBatch() {
 
   const batchRow = { name, type, totalprice:totalPrice, totalportion:totalPortion, totalcost:totalCost, perkgcost:perKg, output_ingredient_id: outputIngId, outputqty: outputQty };
 
+  let bErr = null;
   if (editId) {
     await sb.from('batch_items').delete().eq('batch_id', editId);
-    await sb.from('batches').update(batchRow).eq('id', editId);
+    const { error } = await sb.from('batches').update(batchRow).eq('id', editId);
+    bErr = error;
   } else {
-    await sb.from('batches').insert({ id: batchId, ...batchRow, createdat: new Date().toISOString() });
+    const { error } = await sb.from('batches').insert({ id: batchId, ...batchRow, createdat: new Date().toISOString() });
+    bErr = error;
   }
+  if (bErr) { toast('❌ ' + bErr.message, 'err'); setSyncStatus('ok', ''); return; }
 
   const itemRows = items.map(i => ({
     id: uid(), batch_id: batchId, ingredient_id: i.ingId,
