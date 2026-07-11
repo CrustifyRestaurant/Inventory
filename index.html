@@ -600,6 +600,9 @@ tr:hover td{background:#fafafa;}
     <button class="nav-btn" data-tab="t-consumption" onclick="switchTab(this)">
       <i class="fas fa-fire"></i> Consumption
     </button>
+    <button class="nav-btn" data-tab="t-expenses" onclick="switchTab(this)">
+      <i class="fas fa-money-bill-wave"></i> Expenses
+    </button>
   </div>
 </nav>
 
@@ -939,6 +942,68 @@ tr:hover td{background:#fafafa;}
           <tbody id="cons-day-tbody"></tbody>
         </table>
       </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ══════════════════════════════════════
+     EXPENSES (TILL CASH)
+══════════════════════════════════════ -->
+<div id="t-expenses" class="tab">
+
+  <div class="stats" id="exp-stats">
+    <div class="stat brand"><div class="stat-label">Total Days</div><div class="stat-val" id="ex-days">—</div></div>
+    <div class="stat bad"><div class="stat-label">Total Expenses</div><div class="stat-val" id="ex-total">—</div></div>
+    <div class="stat warn"><div class="stat-label">Avg Daily Spend</div><div class="stat-val" id="ex-avg">—</div></div>
+    <div class="stat ok"><div class="stat-label">Top Category</div><div class="stat-val" id="ex-top" style="font-size:14px;padding-top:4px;">—</div></div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title"><i class="fas fa-money-bill-wave"></i> Till Cash Expenses</span>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn btn-outline btn-sm" onclick="exportExpenses()"><i class="fas fa-file-excel"></i> Export</button>
+        <button class="btn btn-primary btn-sm" onclick="openAddExpense()"><i class="fas fa-plus"></i> Add Expense</button>
+      </div>
+    </div>
+    <div class="filters">
+      <div>
+        <label style="font-size:11px;font-weight:700;color:var(--mid);display:block;margin-bottom:4px;">FROM</label>
+        <input class="form-input" type="date" id="exp-from" onchange="renderExpenses()" style="max-width:160px;">
+      </div>
+      <div>
+        <label style="font-size:11px;font-weight:700;color:var(--mid);display:block;margin-bottom:4px;">TO</label>
+        <input class="form-input" type="date" id="exp-to" onchange="renderExpenses()" style="max-width:160px;">
+      </div>
+      <select class="form-select" id="exp-cat-filter" onchange="renderExpenses()" style="max-width:180px;">
+        <option value="">All Categories</option>
+        <option value="utilities">Utilities</option>
+        <option value="rent">Rent</option>
+        <option value="maintenance">Maintenance & Repairs</option>
+        <option value="transport">Transport / Fuel</option>
+        <option value="wages">Staff / Wages</option>
+        <option value="cleaning">Cleaning Supplies</option>
+        <option value="marketing">Marketing</option>
+        <option value="misc">Miscellaneous</option>
+        <option value="other">Other</option>
+      </select>
+      <div style="display:flex;gap:6px;align-items:flex-end;">
+        <button class="btn btn-outline btn-sm" onclick="setExpRange(7)">Last 7 days</button>
+        <button class="btn btn-outline btn-sm" onclick="setExpRange(30)">Last 30 days</button>
+        <button class="btn btn-outline btn-sm" onclick="setExpRange(0)">All</button>
+      </div>
+    </div>
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Date</th><th>Category</th><th>Description</th>
+            <th style="text-align:right;">Amount</th><th>Paid By</th><th></th>
+          </tr>
+        </thead>
+        <tbody id="exp-tbody"></tbody>
+      </table>
     </div>
   </div>
 
@@ -1291,6 +1356,59 @@ tr:hover td{background:#fafafa;}
     </div>
   </div>
 </div>
+<!-- ADD / EDIT EXPENSE -->
+<div class="overlay" id="m-expense">
+  <div class="modal">
+    <div class="modal-head">
+      <span class="modal-title" id="exp-modal-title">Add Expense</span>
+      <button class="modal-close" onclick="closeM('m-expense')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="exp-edit-id">
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Date *</label>
+          <input class="form-input" type="date" id="exp-date">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Category *</label>
+          <select class="form-select" id="exp-cat">
+            <option value="utilities">Utilities</option>
+            <option value="rent">Rent</option>
+            <option value="maintenance">Maintenance & Repairs</option>
+            <option value="transport">Transport / Fuel</option>
+            <option value="wages">Staff / Wages</option>
+            <option value="cleaning">Cleaning Supplies</option>
+            <option value="marketing">Marketing</option>
+            <option value="misc">Miscellaneous</option>
+            <option value="other">Other</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Description *</label>
+        <input class="form-input" id="exp-desc" placeholder="e.g. Gas cylinder refill">
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Amount (Rs) *</label>
+          <input class="form-input" id="exp-amount" type="number" step="0.01" placeholder="0.00">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Paid By</label>
+          <input class="form-input" id="exp-paidby" placeholder="Cashier / staff name">
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Notes</label>
+        <textarea class="form-textarea" id="exp-notes" rows="2" placeholder="Optional"></textarea>
+      </div>
+      <button class="btn btn-primary" style="width:100%;margin-top:6px;" onclick="saveExpense()">
+        <i class="fas fa-save"></i> Save Expense
+      </button>
+    </div>
+  </div>
+</div>
 <div class="overlay" id="m-users">
   <div class="modal modal-lg">
     <div class="modal-head">
@@ -1329,6 +1447,7 @@ tr:hover td{background:#fafafa;}
           <label><input type="checkbox" id="nu-perm-consumption" checked> Consumption</label>
           <label><input type="checkbox" id="nu-perm-manageusers"> Manage Users</label>
           <label><input type="checkbox" id="nu-perm-batches" checked> Batches</label>
+          <label><input type="checkbox" id="nu-perm-expenses" checked> Expenses</label>
           <label><input type="checkbox" id="nu-perm-delete"> 🔒 Can Delete Records (GRN/Closing/Batch)</label>
           <label><input type="checkbox" id="nu-perm-closinghistory" checked> 📊 Can View Closing History (costs)</label>
         </div>
@@ -1448,11 +1567,23 @@ create table if not exists batch_items (
   portion       numeric default 0,
   cost          numeric default 0
 );
+-- 8. EXPENSES (till cash / petty cash)
+create table if not exists expenses (
+  id          text primary key,
+  bizday      date not null,
+  category    text not null default 'general',
+  description text not null default '',
+  amount      numeric not null default 0,
+  paidby      text default '',
+  notes       text default '',
+  createdat   timestamptz default now()
+);
 
 -- Enable Realtime (optional)
 alter publication supabase_realtime add table ingredients;
 alter publication supabase_realtime add table grn;
 alter publication supabase_realtime add table batches;
+alter publication supabase_realtime add table expenses;
 alter publication supabase_realtime add table closing;</pre>
     </div>
   </div>
@@ -1472,7 +1603,7 @@ const SB_KEY  = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsIn
 // STATE
 // ─────────────────────────────────────────────
 let sb = null;
-let DB = { ingredients: [], grn: [], grnItems: [], closing: [], closingItems: [], batches: [], batchItems: [] };
+let DB = { ingredients: [], grn: [], grnItems: [], closing: [], closingItems: [], batches: [], batchItems: [], expenses: [] };
 let _charts = {};
 let _dashAlertsExpanded = false;
 let _dashAlertsFullHTML = [];
@@ -1564,7 +1695,7 @@ function switchTab(btn) {
   if (tab === 't-grn')         { renderGRN(); }
   if (tab === 't-closing')     { renderClosingHistory(); }
   if (tab === 't-consumption') { renderConsumption(); }
-  if (tab === 't-batches')     { renderBatches(); }
+  if (tab === 't-expenses')    { renderExpenses(); }
 }
 
 async function init() {
@@ -1594,7 +1725,8 @@ async function loadAll() {
     { data: cls },
     { data: cItems },
     { data: batches },
-    { data: bItems }
+    { data: bItems },
+    { data: exps }
   ] = await Promise.all([
     sb.from('ingredients').select('*').order('name'),
     sb.from('grn').select('*').order('bizday', {ascending:false}),
@@ -1602,7 +1734,8 @@ async function loadAll() {
     sb.from('closing').select('*').order('bizday', {ascending:false}),
     sb.from('closing_items').select('*'),
     sb.from('batches').select('*').order('createdat', {ascending:false}),
-    sb.from('batch_items').select('*')
+    sb.from('batch_items').select('*'),
+    sb.from('expenses').select('*').order('bizday', {ascending:false})
   ]);
   DB.ingredients   = ings   || [];
   DB.grn           = grns   || [];
@@ -1611,6 +1744,7 @@ async function loadAll() {
   DB.closingItems  = cItems || [];
   DB.batches       = batches || [];
   DB.batchItems    = bItems  || [];
+  DB.expenses = exps || [];
   setSyncStatus('ok', `Synced · ${DB.ingredients.length} items`);
   populateCategoryFilter();
 }
@@ -1690,8 +1824,11 @@ function renderTodayActivity() {
 
   const closingToday = DB.closing.find(c => c.bizday === today);
 
+  const expToday = DB.expenses.filter(e => e.bizday === today);
+  const expTotal = expToday.reduce((s,e) => s + safe(e.amount), 0);
+
   div.innerHTML = `
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;">
       <div style="background:#f0fdf4;border-radius:10px;padding:12px;border:2px solid #d1fae5;">
         <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#059669;margin-bottom:4px;">GRN Today</div>
         <div style="font-family:'Plus Jakarta Sans',sans-serif;font-size:18px;font-weight:800;">${fmtCurrency(grnTotal)}</div>
@@ -1701,6 +1838,11 @@ function renderTodayActivity() {
         <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:${closingToday?'#991b1b':'var(--mid)'};margin-bottom:4px;">Consumption Today</div>
         <div style="font-family:'Plus Jakarta Sans',sans-serif;font-size:18px;font-weight:800;">${closingToday ? fmtCurrency(closingToday.totalcost) : '—'}</div>
         <div style="font-size:11px;color:var(--mid);">${closingToday ? 'Closed by ' + closingToday.closedby : 'Not closed yet'}</div>
+      </div>
+      <div style="background:#fffbeb;border-radius:10px;padding:12px;border:2px solid #fde68a;">
+        <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#b45309;margin-bottom:4px;">Till Expenses Today</div>
+        <div style="font-family:'Plus Jakarta Sans',sans-serif;font-size:18px;font-weight:800;">${fmtCurrency(expTotal)}</div>
+        <div style="font-size:11px;color:var(--mid);">${expToday.length} entries</div>
       </div>
     </div>
   `;
@@ -4066,6 +4208,165 @@ function exportConsumptionReport() {
   toast('Exported consumption report');
 }
 
+// ─────────────────────────────────────────────
+// EXPENSES (TILL CASH)
+// ─────────────────────────────────────────────
+const EXP_CAT_LABELS = {
+  utilities:'Utilities', rent:'Rent', maintenance:'Maintenance & Repairs',
+  transport:'Transport / Fuel', wages:'Staff / Wages', cleaning:'Cleaning Supplies',
+  marketing:'Marketing', misc:'Miscellaneous', other:'Other'
+};
+function expCatLabel(c) { return EXP_CAT_LABELS[c] || c; }
+
+function setExpRange(days) {
+  const to = new Date();
+  document.getElementById('exp-to').value = to.toISOString().slice(0,10);
+  if (days === 0) {
+    document.getElementById('exp-from').value = '';
+  } else {
+    const from = new Date();
+    from.setDate(from.getDate() - days);
+    document.getElementById('exp-from').value = from.toISOString().slice(0,10);
+  }
+  renderExpenses();
+}
+
+function getFilteredExpenses() {
+  const from = document.getElementById('exp-from')?.value || '';
+  const to   = document.getElementById('exp-to')?.value   || '';
+  const cat  = document.getElementById('exp-cat-filter')?.value || '';
+  let list = [...DB.expenses];
+  if (from) list = list.filter(e => e.bizday >= from);
+  if (to)   list = list.filter(e => e.bizday <= to);
+  if (cat)  list = list.filter(e => e.category === cat);
+  return list.sort((a,b) => b.bizday.localeCompare(a.bizday));
+}
+
+function renderExpenses() {
+  const list = getFilteredExpenses();
+  const tbody = document.getElementById('exp-tbody');
+  if (!tbody) return;
+
+  const total = list.reduce((s,e) => s + safe(e.amount), 0);
+  const days  = new Set(list.map(e => e.bizday)).size;
+  const avg   = days > 0 ? total / days : 0;
+  const catTotals = {};
+  list.forEach(e => { catTotals[e.category] = (catTotals[e.category]||0) + safe(e.amount); });
+  const topCat = Object.entries(catTotals).sort((a,b) => b[1]-a[1])[0];
+
+  document.getElementById('ex-days').textContent  = days;
+  document.getElementById('ex-total').textContent = fmtCurrency(total);
+  document.getElementById('ex-avg').textContent   = fmtCurrency(avg);
+  document.getElementById('ex-top').textContent   = topCat ? expCatLabel(topCat[0]) : '—';
+
+  if (!list.length) {
+    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:40px;color:var(--mid);">No expenses found</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = list.map(e => `
+    <tr>
+      <td><span class="day-badge"><i class="fas fa-receipt"></i>${fmtDate(e.bizday)}</span></td>
+      <td><span class="badge badge-info">${expCatLabel(e.category)}</span></td>
+      <td>
+        <div style="font-weight:600;">${e.description}</div>
+        ${e.notes ? `<div style="font-size:11px;color:var(--mid);">${e.notes}</div>` : ''}
+      </td>
+      <td style="text-align:right;font-weight:800;color:var(--danger);">${fmtCurrency(e.amount)}</td>
+      <td>${e.paidby || '—'}</td>
+      <td>
+        <div style="display:flex;gap:5px;">
+          <button class="btn btn-sm btn-icon" style="background:#dbeafe;color:#1e40af;" onclick="editExpense('${e.id}')"><i class="fas fa-edit"></i></button>
+          <button class="btn btn-sm btn-icon" style="background:#fee2e2;color:#991b1b;" onclick="deleteExpense('${e.id}')"><i class="fas fa-trash"></i></button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function openAddExpense() {
+  document.getElementById('exp-modal-title').textContent = 'Add Expense';
+  document.getElementById('exp-edit-id').value = '';
+  document.getElementById('exp-date').value    = bizDayToday();
+  document.getElementById('exp-cat').value     = 'utilities';
+  document.getElementById('exp-desc').value    = '';
+  document.getElementById('exp-amount').value  = '';
+  document.getElementById('exp-paidby').value  = '';
+  document.getElementById('exp-notes').value   = '';
+  openM('m-expense');
+}
+
+function editExpense(id) {
+  const e = DB.expenses.find(x => x.id === id);
+  if (!e) return;
+  document.getElementById('exp-modal-title').textContent = 'Edit Expense';
+  document.getElementById('exp-edit-id').value = e.id;
+  document.getElementById('exp-date').value    = e.bizday;
+  document.getElementById('exp-cat').value     = e.category;
+  document.getElementById('exp-desc').value    = e.description;
+  document.getElementById('exp-amount').value  = e.amount;
+  document.getElementById('exp-paidby').value  = e.paidby || '';
+  document.getElementById('exp-notes').value   = e.notes || '';
+  openM('m-expense');
+}
+
+async function saveExpense() {
+  const bizday = document.getElementById('exp-date').value;
+  const desc   = document.getElementById('exp-desc').value.trim();
+  const amount = safe(document.getElementById('exp-amount').value);
+  if (!bizday)     { toast('Date is required','err'); return; }
+  if (!desc)       { toast('Description is required','err'); return; }
+  if (amount <= 0) { toast('Enter an amount greater than 0','err'); return; }
+
+  const rec = {
+    id:          document.getElementById('exp-edit-id').value || uid(),
+    bizday:      bizday,
+    category:    document.getElementById('exp-cat').value,
+    description: desc,
+    amount:      amount,
+    paidby:      document.getElementById('exp-paidby').value.trim(),
+    notes:       document.getElementById('exp-notes').value.trim()
+  };
+
+  setSyncStatus('busy', 'Saving expense…');
+  const { error } = await sb.from('expenses').upsert(rec, {onConflict:'id'});
+  if (error) { toast('❌ '+error.message,'err'); setSyncStatus('ok',''); return; }
+
+  const idx = DB.expenses.findIndex(e => e.id === rec.id);
+  if (idx >= 0) DB.expenses[idx] = rec; else DB.expenses.unshift(rec);
+
+  closeM('m-expense');
+  renderExpenses();
+  renderDashboard();
+  setSyncStatus('ok', 'Synced');
+  toast('✅ Expense saved');
+}
+
+async function deleteExpense(id) {
+  if (!canDeleteRecords()) { toast('❌ You do not have permission to delete records', 'err'); return; }
+  if (!confirm('Delete this expense record?')) return;
+  const { error } = await sb.from('expenses').delete().eq('id', id);
+  if (error) { toast('❌ '+error.message,'err'); return; }
+  DB.expenses = DB.expenses.filter(e => e.id !== id);
+  renderExpenses();
+  renderDashboard();
+  toast('Expense deleted');
+}
+
+function exportExpenses() {
+  const list = getFilteredExpenses();
+  if (!list.length) { toast('No data to export','err'); return; }
+  const data = list.map(e => ({
+    'Date': e.bizday, 'Category': expCatLabel(e.category),
+    'Description': e.description, 'Amount': e.amount,
+    'Paid By': e.paidby, 'Notes': e.notes
+  }));
+  const ws = XLSX.utils.json_to_sheet(data);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Expenses');
+  blobDownload(wb, `Expenses_${new Date().toISOString().slice(0,10)}.xlsx`);
+}
+
 function copySQL() {
   const text = document.getElementById('sql-block').textContent;
   navigator.clipboard.writeText(text).then(()=>toast('SQL copied to clipboard'));
@@ -4214,6 +4515,7 @@ async function renderUsers() {
           <label><input type="checkbox" id="perm_${u.id}_t-consumption" ${p['t-consumption']?'checked':''}> Consumption</label>
           <label><input type="checkbox" id="perm_${u.id}_manage_users" ${p['manage_users']?'checked':''}> Manage Users</label>
           <label><input type="checkbox" id="perm_${u.id}_t-batches" ${p['t-batches']?'checked':''}> Batches</label>
+          <label><input type="checkbox" id="perm_${u.id}_t-expenses" ${p['t-expenses']?'checked':''}> Expenses</label>
           <label><input type="checkbox" id="perm_${u.id}_delete_records" ${p['delete_records']?'checked':''}> 🔒 Can Delete Records</label>
           <label><input type="checkbox" id="perm_${u.id}_view_closing_history" ${p['view_closing_history']!==false?'checked':''}> 📊 Can View Closing History</label>
         </div>
@@ -4237,6 +4539,7 @@ async function saveUserPermissions(id) {
     't-consumption': document.getElementById(`perm_${id}_t-consumption`).checked,
     'manage_users':  document.getElementById(`perm_${id}_manage_users`).checked,
     't-batches':     document.getElementById(`perm_${id}_t-batches`).checked,
+    't-expenses':    document.getElementById(`perm_${id}_t-expenses`).checked,
     'delete_records': document.getElementById(`perm_${id}_delete_records`).checked,
     'view_closing_history': document.getElementById(`perm_${id}_view_closing_history`).checked,
   };
@@ -4260,6 +4563,7 @@ async function createUser() {
     't-consumption': document.getElementById('nu-perm-consumption').checked,
     'manage_users':  document.getElementById('nu-perm-manageusers').checked,
     't-batches':     document.getElementById('nu-perm-batches').checked,
+    't-expenses':    document.getElementById('nu-perm-expenses').checked,
     'delete_records': document.getElementById('nu-perm-delete').checked,
     'view_closing_history': document.getElementById('nu-perm-closinghistory').checked,
   };
