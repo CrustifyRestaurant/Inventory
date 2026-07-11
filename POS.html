@@ -1235,6 +1235,25 @@ async function flushOfflineQueue() {
   if (remaining.length === 0) showToast('✅ All offline data synced', 'success');
   else if (q.length) showToast(remaining.length + ' items still pending sync', 'error');
 }
+function genOrderId() {
+  return 'ord-' + Date.now() + '-' + Math.random().toString(36).slice(2,8);
+}
+
+function cancelPendingOrder(orderId) {
+  if (!orderId) return;
+  // Drop any still-queued write for this exact order — covers a create/update
+  // that never left the device while offline, so it can never resurrect later
+  const q = getQueue().filter(item => {
+    if (item.table !== 'kitchen_orders') return true;
+    const payloadArr = Array.isArray(item.payload) ? item.payload : [item.payload];
+    const matchesId = payloadArr.some(p => p && p.id === orderId) ||
+                       (item.match?.eq || []).some(([k,v]) => k === 'id' && v === orderId);
+    return !matchesId;
+  });
+  saveQueue(q);
+  // Also ask the server to remove it in case it already synced before cancellation
+  if (sb) sbWrite('kitchen_orders', 'delete', null, { eq: [['id', orderId]] });
+}
 
 window.addEventListener('online', () => { isOnline = true; updateOfflineBadge(); showToast('Back online — syncing...', 'success'); flushOfflineQueue(); });
 window.addEventListener('offline', () => { isOnline = false; updateOfflineBadge(); showToast('No internet — working offline', 'error'); });
@@ -2115,8 +2134,12 @@ async function pollWebOrders() {
         );
       }
 
-      // POS Delivery orders are managed via DEL tables only — never re-import
-      if (order.source === 'POS' && order.type === 'Delivery') return;
+      // Never re-import an order the POS already has open locally under any table
+      const alreadyLocal = Object.values(tableOrders).some(o => o.id === order.id || o.webOrderId === order.id);
+      if (alreadyLocal) return;
+      // POS-created orders are already reflected locally in tableOrders — never re-import any of them as "web" orders
+      if (order.source === 'POS') return;
+
 
       if (!tableId) return;
       if (voidedOrderIds.has(order.id)) return;
@@ -2328,7 +2351,11 @@ function backToTables() {
   if (currentOrder.items.length && !currentOrder.id && !currentOrder.fromWeb) {
     const confirm = window.confirm('You have unpaid items. Save table or discard?');
     if (!confirm) {
-      if (currentOrder.table) delete tableOrders[currentOrder.table];
+      if (currentOrder.table) {
+        cancelPendingOrder(currentOrder.id);
+        delete tableOrders[currentOrder.table];
+        _saveActiveTable(currentOrder.table, null);
+      }
     } else {
       saveTableOrder();
     }
@@ -2466,13 +2493,23 @@ async function openTable(tname, floor) {
 }
 // ✅ NEW function: creates POS order record in Supabase (Delivery AND Takeaway)
 async function createPosOrderRecord(tname, type) {
+  const isDelivery = type === 'Delivery';
+  const addr = isDelivery ? (document.getElementById('delivery-address')?.value || '') : '';
+  const delCharge = isDelivery ? (parseFloat(document.getElementById('delivery-charge')?.value) || 0) : 0;
+  const orderId = genOrderId();
+
+  currentOrder.id = orderId;
+  currentOrder.webOrderId = orderId;
+  if (tableOrders[tname]) {
+    tableOrders[tname].id = orderId;
+    tableOrders[tname].webOrderId = orderId;
+    _saveActiveTable(tname, tableOrders[tname]);
+  }
+
   if (!sb) return;
   try {
-    const isDelivery = type === 'Delivery';
-    const addr = isDelivery ? (document.getElementById('delivery-address')?.value || '') : '';
-    const delCharge = isDelivery ? (parseFloat(document.getElementById('delivery-charge')?.value) || 0) : 0;
-    
     const obj = {
+      id: orderId,
       type: type,
       location: isDelivery ? (addr || tname) : tname,
       items: '',
@@ -2484,18 +2521,9 @@ async function createPosOrderRecord(tname, type) {
       phone: null,
       source: 'POS'
     };
-    
-    const res = await sbWrite('kitchen_orders', 'insert', [obj]);
-    if (res && res.data && res.data[0]) {
-  currentOrder.id = res.data[0].id;
-  if (tableOrders[tname]) {
-    tableOrders[tname].id = res.data[0].id;
-    tableOrders[tname].webOrderId = res.data[0].id;
-    _saveActiveTable(tname, tableOrders[tname]);
-      }
-    }
-  } catch(e) { 
-    console.error('createPosOrderRecord error:', e); 
+    await sbWrite('kitchen_orders', 'upsert', [obj], { onConflict: 'id' });
+  } catch(e) {
+    console.error('createPosOrderRecord error:', e);
   }
 }
 function populateRiderDropdown() {
@@ -2543,15 +2571,8 @@ if (currentOrder.fromWeb) {
   populateRiderDropdown();
 document.getElementById('delivery-rider').value = currentOrder.rider || '';
 // Show correct payment button based on type
-const isTakeaway = type === 'Takeaway';
-document.getElementById('takeaway-paid-btn-wrap').style.display = isTakeaway ? 'block' : 'none';
-document.getElementById('collect-btn').style.display = isTakeaway ? 'none' : 'block';
-
-// If already paid, show hand over button instead
-if (currentOrder.paid && isTakeaway) {
-  document.getElementById('takeaway-paid-btn-wrap').innerHTML =
-    '<button class="oa-btn" style="width:100%;padding:13px;font-size:14px;background:var(--surface2);color:var(--green);border:2px solid var(--green);" onclick="handOverTakeaway()">✅ Handed Over — Clear Table</button>';
-}
+document.getElementById('takeaway-paid-btn-wrap').style.display = 'none';
+document.getElementById('collect-btn').style.display = 'block';
   // Discount
   document.getElementById('disc-amount').value = currentOrder.discAmount || 0;
   discType = currentOrder.discType || 'flat';
@@ -2863,6 +2884,7 @@ function saveTableOrder() {
   if (!currentOrder.table) return;
  
   if (!currentOrder.items.length && !currentOrder.fromWeb) {
+    cancelPendingOrder(currentOrder.id);
     delete tableOrders[currentOrder.table];
     _saveActiveTable(currentOrder.table, null);   // remove from cloud
     return;
@@ -3335,31 +3357,46 @@ async function sendToKitchen() {
   const custPhone = document.getElementById('order-customer-phone').value;
   currentOrder.customerName = custName; currentOrder.customerPhone = custPhone;
 
-  if (currentOrder.id && sb) {
-    // Update existing order
-    try {
-      const updDelAddr = currentOrder.type==='Delivery'?(document.getElementById('delivery-address').value||currentOrder.deliveryAddress||''):'';
-      const updDelCharge = currentOrder.type==='Delivery'?(parseFloat(document.getElementById('delivery-charge').value)||currentOrder.deliveryCharge||0):0;
-      await sbWrite('kitchen_orders', 'update',
-        { items:itemsText, subtotal:grand, delivery_fee:updDelCharge, location:updDelAddr||currentOrder.table||currentOrder.type, customer_name:custName||null, phone:custPhone||null, source:'POS' },
-        { eq:[['id', currentOrder.id]] });
-      saveTableOrder(); showToast('Kitchen updated! 🔥','success'); return;
-    } catch(e) {}
+  // POS Delivery orders (not from web) are NOT sent to kitchen_orders — managed via DEL table only
+  if (currentOrder.type === 'Delivery' && !currentOrder.fromWeb && !currentOrder.id) {
+    saveTableOrder(); showToast('Order saved! 🔥','success'); return;
+  }
+
+  const isFirstSend = !currentOrder.id;
+
+  // Assign a stable local ID up front — works identically online or offline
+  if (!currentOrder.id) {
+    currentOrder.id = genOrderId();
+    currentOrder.webOrderId = currentOrder.id;
+  }
+  if (currentOrder.table && tableOrders[currentOrder.table]) {
+    tableOrders[currentOrder.table].id = currentOrder.id;
+    tableOrders[currentOrder.table].webOrderId = currentOrder.id;
   }
 
   const delAddr = currentOrder.type==='Delivery' ? (document.getElementById('delivery-address').value||currentOrder.deliveryAddress||'') : '';
   const delCharge = currentOrder.type==='Delivery' ? (parseFloat(document.getElementById('delivery-charge').value)||currentOrder.deliveryCharge||0) : 0;
-  const location = currentOrder.type==='Delivery' ? (delAddr || currentOrder.table||'Delivery') : (currentOrder.table?currentOrder.table.replace('-',' '):currentOrder.type);
-  // POS Delivery orders are NOT sent to kitchen_orders — managed via DEL table only
-  if (currentOrder.type === 'Delivery' && !currentOrder.fromWeb) {
-    saveTableOrder(); showToast('Order saved! 🔥','success'); return;
-  }
-  const obj = { type:currentOrder.type, location:location, items:itemsText, status:'WAITING', subtotal:grand, delivery_fee:delCharge, branch:activeBranch, customer_name:custName||null, phone:custPhone||null, source:'POS' };
+  const location = currentOrder.type==='Delivery' ? (delAddr || currentOrder.table||'Delivery') : (currentOrder.table || currentOrder.type);
+
   try {
-    const res = await sbWrite('kitchen_orders', 'insert', [obj]);
-    if (res && res.data && res.data[0]) { currentOrder.id = res.data[0].id; }
-    saveTableOrder(); showToast('Sent to kitchen! 🔥','success');
-  } catch(e) { showToast('Kitchen send failed — saved locally','error'); console.error(e); }
+    if (isFirstSend) {
+      const obj = {
+        id: currentOrder.id, type: currentOrder.type, location: location, items: itemsText,
+        status: 'WAITING', subtotal: grand, delivery_fee: delCharge, branch: activeBranch,
+        customer_name: custName || null, phone: custPhone || null, source: 'POS'
+      };
+      await sbWrite('kitchen_orders', 'upsert', [obj], { onConflict: 'id' });
+    } else {
+      await sbWrite('kitchen_orders', 'update',
+        { items:itemsText, subtotal:grand, delivery_fee:delCharge, location:location, customer_name:custName||null, phone:custPhone||null, source:'POS' },
+        { eq:[['id', currentOrder.id]] });
+    }
+    saveTableOrder();
+    showToast(isFirstSend ? 'Sent to kitchen! 🔥' : 'Kitchen updated! 🔥', 'success');
+  } catch(e) {
+    showToast('Kitchen send failed — saved locally', 'error');
+    console.error(e);
+  }
 }
 function printBillOnly() {
   if (!currentOrder.items.length) { showToast('No items in order', 'error'); return; }
@@ -3396,6 +3433,7 @@ function printBillOnly() {
 let _paymentInProgress = false;  // ✅ FIX 7: double-tap guard
 function handOverTakeaway() {
   if (currentOrder.table) {
+    cancelPendingOrder(currentOrder.id);
     _saveActiveTable(currentOrder.table, null);
     delete tableOrders[currentOrder.table];
   }
