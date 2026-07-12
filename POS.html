@@ -1270,7 +1270,7 @@ setInterval(async () => {
     if (wasOffline && isOnline) { showToast('Back online — syncing...', 'success'); flushOfflineQueue(); }
     updateOfflineBadge();
   } catch(e) { isOnline = false; updateOfflineBadge(); }
-}, 20000);
+}, 90000);
 
 const BRANCHES = {
   MULTAN: { id:'MULTAN', name:'Multan', address:'Chowk Shah Abbas Soraj Kund Road, Near Jamia Rahimia, Pir Colony No. 1, Multan', phone:'923256032424',
@@ -1659,12 +1659,33 @@ function startClock() {
   }, 1000);
 }
 
-// Poll Supabase every 15s for new web/QR orders placed on tables
+// Real-time sync: any logged-in screen (till or admin watching from home)
+// stays live with whatever another screen just did — no refresh needed.
 function startLiveReload() {
   if (liveReloadInterval) clearInterval(liveReloadInterval);
 
-  // Real-time subscription
   if (sb) {
+    // 1) Table orders — open table, add items, move table, collect payment
+    sb.channel('active-tables-changes')
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'active_tables',
+        filter: `branch=eq.${activeBranch}`
+      }, (payload) => handleActiveTableRealtime(payload))
+      .subscribe();
+
+    // 2) Completed sales — cash drawer, closing report, per-staff totals
+    sb.channel('shift-tx-changes')
+      .on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'shift_transactions',
+        filter: `branch=eq.${activeBranch}`
+      }, (payload) => handleShiftTxRealtime(payload))
+      .subscribe();
+
+    // 3) Delivery orders — status changes, rider assignment
     sb.channel('kitchen-orders-changes')
       .on('postgres_changes', {
         event: '*',
@@ -1672,15 +1693,83 @@ function startLiveReload() {
         table: 'kitchen_orders',
         filter: `branch=eq.${activeBranch}`
       }, (payload) => {
-        console.log('Realtime:', payload.eventType);
+        console.log('Realtime kitchen_orders:', payload.eventType);
+        if (document.getElementById('view-delivery').classList.contains('active')) {
+          renderDeliveryView();
+        }
         setTimeout(pollWebOrders, 500);
       })
       .subscribe();
   }
 
-  // Fallback poll every 60s
-  liveReloadInterval = setInterval(pollWebOrders, 120000);
-  pollWebOrders();
+  // Safety-net poll in case a realtime event is ever missed (brief network
+  // drop, etc). Not the primary sync mechanism anymore — just a backstop.
+  liveReloadInterval = setInterval(() => {
+    if (document.getElementById('view-tables').classList.contains('active')) renderTableMap();
+    if (document.getElementById('view-cash').classList.contains('active')) renderCashView();
+    if (document.getElementById('view-delivery').classList.contains('active')) renderDeliveryView();
+  }, 300000); // 5 minutes, not 60s
+}
+
+// Applies a realtime active_tables change to local state and re-renders
+// the table map — without clobbering a table the local user has open and
+// is actively typing into right now.
+function handleActiveTableRealtime(payload) {
+  const tname = payload.new?.table_name || payload.old?.table_name;
+  if (!tname) return;
+
+  const isEditingThisTable =
+    document.getElementById('view-order').classList.contains('active') &&
+    currentOrder.table === tname;
+
+  if (payload.eventType === 'DELETE') {
+    if (!isEditingThisTable) delete tableOrders[tname];
+  } else {
+    if (!isEditingThisTable) tableOrders[tname] = payload.new.order_data;
+  }
+
+  if (document.getElementById('view-tables').classList.contains('active')) {
+    renderTableMap();
+  }
+}
+
+// Mirrors a sale/void/expense recorded on another screen into this
+// screen's cash drawer + closing report, live — and keeps billCounter
+// from colliding with a number another till just issued.
+function handleShiftTxRealtime(payload) {
+  const t = payload.new;
+  if (!t || t.date !== todayKey()) return;
+
+  const alreadyHave = completedOrders.some(o => o.billNo === t.bill_no && o.time &&
+    Math.abs(new Date(o.time) - new Date(t.created_at)) < 10000);
+  if (alreadyHave) return;
+
+  completedOrders.push({
+    billNo: t.bill_no, table: t.table_loc, type: t.type,
+    items: [], itemsText: t.items_text || '',
+    total: t.total, method: t.method, time: new Date(t.created_at),
+    staff: t.staff, branch: t.branch || activeBranch,
+    customerName: t.customer_name || '', customerPhone: t.customer_phone || '',
+    deliveryAddress: t.delivery_address || '', deliveryCharge: t.delivery_charge || 0,
+    sc: t.sc || 0, scPct: t.sc_pct || 0, disc: t.discount || 0,
+    cashReceived: t.cash_received || 0, splitCash: t.split_cash || 0,
+    splitCard: t.split_card || 0, returnReason: t.return_reason || '',
+    kitchenOrderId: t.kitchen_order_id || null
+  });
+
+  const n = parseInt(t.bill_no);
+  if (!isNaN(n) && n >= billCounter) billCounter = n + 1;
+  document.getElementById('bar-billno').textContent = String(billCounter).padStart(3,'0');
+
+  cashInHand = openingBalance
+    + completedOrders.filter(o => o.method === 'cash').reduce((s,o) => s + o.total, 0)
+    + completedOrders.filter(o => o.method === 'split').reduce((s,o) => s + (o.splitCash||0), 0)
+    - completedOrders.filter(o => o.method === 'cash-out').reduce((s,o) => s + Math.abs(o.total), 0);
+  document.getElementById('bar-cash').textContent = 'Rs ' + cashInHand;
+
+  if (document.getElementById('view-cash').classList.contains('active')) renderCashView();
+  if (document.getElementById('view-closing').classList.contains('active')) renderClosingReport();
+  if (document.getElementById('view-tables').classList.contains('active')) renderTableMap();
 }
 // ══════════════════════════════════
 // FETCH ADMIN OVERRIDES FOR POS
