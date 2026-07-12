@@ -1406,6 +1406,39 @@ let liveReloadInterval = null;
 // LOGIN
 // ══════════════════════════════════
 
+// ══════════════════════════════════
+// BRANCH LOGIN GATE
+// Blocks non-admin logins from the moment Admin runs "Close All Shifts"
+// until 3:00 PM the same day (Pakistan time). Admin can always log in.
+// ══════════════════════════════════
+async function checkLoginGate() {
+  if (!sb) return { blocked: false };
+  try {
+    const todayK = todayKey();
+    const { data } = await sb.from('shift_closures')
+      .select('closed_at')
+      .eq('branch', activeBranch)
+      .eq('date', todayK)
+      .order('closed_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (!data) return { blocked: false }; // no close today — open as normal
+
+    // Get current hour in Pakistan time (same convention as todayKey())
+    const pk = new Date(Date.now() + 5 * 60 * 60 * 1000);
+    const hourPK = parseInt(pk.toISOString().slice(11, 13), 10);
+
+    if (hourPK < 15) { // before 3:00 PM
+      return { blocked: true, reopenTime: '3:00 PM' };
+    }
+    return { blocked: false };
+  } catch (e) {
+    console.warn('checkLoginGate failed — allowing login:', e.message);
+    return { blocked: false }; // fail-open, never lock everyone out on a network hiccup
+  }
+}
+
 
 async function doLogin() {
   const name = document.getElementById('staff-name').value.trim();
@@ -1434,6 +1467,14 @@ async function doLogin() {
   }
 
   if (!staffRecord) { showLoginErr('Wrong name or PIN. Try again.'); return; }
+
+  if (staffRecord.role !== 'Admin') {
+    const gate = await checkLoginGate();
+    if (gate.blocked) {
+      showLoginErr('🔒 Branch closed by Admin after last shift. Reopens at ' + gate.reopenTime + '.');
+      return;
+    }
+  }
 
   currentStaff = staffRecord.name;
 currentStaffRole = staffRecord.role;
@@ -1889,7 +1930,12 @@ async function _loadActiveTables() {
   try {
     const { data, error } = await sb.from('active_tables')
       .select('*').eq('branch', activeBranch);
-    if (error || !data || !data.length) return;
+    if (error) {
+      console.error('active_tables load failed:', error.message);
+      showToast('⚠️ Could not restore open tables — ' + error.message, 'error');
+      return;
+    }
+    if (!data || !data.length) return;
 
     // Get today's paid transactions
     const { data: paidTx } = await sb.from('shift_transactions')
@@ -2352,7 +2398,7 @@ async function openTable(tname, floor) {
       } catch(e) { console.warn('Could not load order items:', e); }
     }
   } else {
-    currentOrder = { table:tname, type:orderType, items:[], startTime:Date.now(), id:null, scEnabled:false, scPct:7, fromWeb:false, confirmed:false, webOrderId:null };
+    currentOrder = { table:tname, type:orderType, items:[], startTime:Date.now(), id:null, scEnabled:false, scPct:7, fromWeb:false, confirmed:false, webOrderId:null, sentToKitchen:false };
   }
   scEnabled = currentOrder.scEnabled !== undefined ? currentOrder.scEnabled : (orderType==='Dine-In');
   scPercent = currentOrder.scPct || 7;
@@ -2465,7 +2511,7 @@ if (currentOrder.paid && isTakeaway) {
   updateActionButtonsState();
 }
 function updateActionButtonsState() {
-  const sentToKitchen = !!currentOrder.id;
+  const sentToKitchen = !!currentOrder.id || !!currentOrder.sentToKitchen;
   ['print-bill-btn', 'collect-btn', 'takeaway-pay-btn'].forEach(id => {
     const btn = document.getElementById(id);
     if (!btn) return;
@@ -3255,14 +3301,20 @@ async function sendToKitchen() {
   const delAddr = currentOrder.type==='Delivery' ? (document.getElementById('delivery-address').value||currentOrder.deliveryAddress||'') : '';
   const delCharge = currentOrder.type==='Delivery' ? (parseFloat(document.getElementById('delivery-charge').value)||currentOrder.deliveryCharge||0) : 0;
   const location = currentOrder.type==='Delivery' ? (delAddr || currentOrder.table||'Delivery') : (currentOrder.table?currentOrder.table.replace('-',' '):currentOrder.type);
-  // POS Delivery orders are NOT sent to kitchen_orders — managed via DEL table only
+  // POS Delivery orders are NOT sent to kitchen_orders — managed via DEL table only.
+  // We still mark it as "sent" locally so Print/Collect buttons unlock, same as Dine-In/Takeaway.
   if (currentOrder.type === 'Delivery' && !currentOrder.fromWeb) {
-    saveTableOrder(); showToast('Order saved! 🔥','success'); return;
+    currentOrder.sentToKitchen = true;
+    saveTableOrder();
+    updateActionButtonsState();
+    showToast('Order saved! 🔥','success');
+    return;
   }
   const obj = { type:currentOrder.type, location:location, items:itemsText, status:'WAITING', subtotal:grand, delivery_fee:delCharge, branch:activeBranch, customer_name:custName||null, phone:custPhone||null, source:'POS' };
   try {
     const res = await sbWrite('kitchen_orders', 'insert', [obj]);
     if (res && res.data && res.data[0]) { currentOrder.id = res.data[0].id; }
+    currentOrder.sentToKitchen = true;
     saveTableOrder(); updateActionButtonsState(); showToast('Sent to kitchen! 🔥','success');
   } catch(e) { showToast('Kitchen send failed — saved locally','error'); console.error(e); }
 }
@@ -3564,7 +3616,7 @@ items_text: sale.items.map(i => `${i.qty}x ${i.name}`).join(', ') + sale.riderTa
     document.getElementById('bar-cash').textContent   = 'Rs ' + cashInHand;
     document.getElementById('bar-billno').textContent = String(billCounter).padStart(3, '0');
  
-    if (!currentOrder.id && currentOrder.type !== 'Delivery') await sendToKitchen();
+    if (!currentOrder.id && !currentOrder.sentToKitchen) await sendToKitchen();
     if (currentOrder.id) paidOrderIds.add(currentOrder.id);
  
     // Remove from cloud active_tables — hard delete so refresh never restores a paid table
@@ -3612,7 +3664,7 @@ async function printKitchenTicket() {
 
   // Ensure the order is actually in kitchen_orders BEFORE we let the
   // cashier proceed to Print Bill / Collect & Clear.
-  if (!currentOrder.id && currentOrder.type !== 'Delivery') {
+  if (!currentOrder.id && !currentOrder.sentToKitchen) {
     await sendToKitchen();
   }
 
@@ -4435,14 +4487,20 @@ function saveTodaySales() {
 }
 async function loadTodaySales() {
   if (!sb) return;
+  const todayK = todayKey();
+
+  // Check for a formal close in its OWN try/catch — if this query fails
+  // (missing table, RLS, network blip) we must NOT treat today as closed.
+  let closedCheck = null;
   try {
-    const todayK = todayKey();
-
-    // Only source of truth for "is shift closed" is Supabase
-    // localStorage flags are NOT checked here — a browser refresh is not a shift end
-    const { data: closedCheck } = await sb.from('shift_closures')
+    const res = await sb.from('shift_closures')
       .select('id').eq('branch', activeBranch).eq('date', todayK).maybeSingle();
+    closedCheck = res.data;
+  } catch(e) {
+    console.error('shift_closures check failed — assuming NOT closed:', e.message);
+  }
 
+  try {
     if (closedCheck) {
       // Shift was formally closed via the Close button — start fresh
       openingBalance = 0; billCounter = 1; completedOrders = []; cashInHand = 0;
@@ -4507,7 +4565,8 @@ async function loadTodaySales() {
 
   } catch(e) {
     console.error('loadTodaySales error:', e);
-    openingBalance = 0; completedOrders = [];
+    // Don't blank completedOrders/openingBalance here — a transient failure
+    // shouldn't erase whatever data we may have already loaded before the error.
   }
 }
 
