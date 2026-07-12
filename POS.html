@@ -3797,7 +3797,10 @@ async function printKitchenTicket() {
           <span style="font-size:48px;font-weight:900;line-height:1;">🎫 #${tokenNum}</span>
           <span style="font-size:22px;font-weight:900;letter-spacing:0.5px;white-space:nowrap;">KOT #${kotNum}</span>
         </div>
-        <div style="font-size:13px;font-weight:700;letter-spacing:2px;text-transform:uppercase;margin-top:4px;">TAKEAWAY</div>
+        <div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-top:2px;">
+          <span style="font-size:13px;font-weight:700;letter-spacing:2px;text-transform:uppercase;">TAKEAWAY</span>
+          <span style="font-size:20px;font-weight:900;letter-spacing:0.5px;">${table}</span>
+        </div>
         ${custName ? `<div style="font-size:18px;font-weight:800;margin-top:4px;">👤 ${custName}</div>` : ''}
       </div>`;
 
