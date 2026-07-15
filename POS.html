@@ -504,9 +504,9 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
       <button class="anav-btn" onclick="showATab('ainventory')">🧪 Ingredients</button>
       <button class="anav-btn" onclick="showATab('aconsumption')">📦 Consumption</button>
       <div style="margin-left:auto;display:flex;align-items:center;gap:10px;">
-        <input type="date" id="a-date-from" style="background:#242830;border:1px solid rgba(255,255,255,0.07);border-radius:8px;padding:6px 10px;color:#f0f0f0;font-family:'Outfit',sans-serif;font-size:12px;outline:none;">
+        <input type="datetime-local" step="60" id="a-date-from" style="background:#242830;border:1px solid rgba(255,255,255,0.07);border-radius:8px;padding:6px 10px;color:#f0f0f0;font-family:'Outfit',sans-serif;font-size:12px;outline:none;">
         <span style="color:#555d70;font-size:12px;">to</span>
-        <input type="date" id="a-date-to" style="background:#242830;border:1px solid rgba(255,255,255,0.07);border-radius:8px;padding:6px 10px;color:#f0f0f0;font-family:'Outfit',sans-serif;font-size:12px;outline:none;">
+        <input type="datetime-local" step="60" id="a-date-to" style="background:#242830;border:1px solid rgba(255,255,255,0.07);border-radius:8px;padding:6px 10px;color:#f0f0f0;font-family:'Outfit',sans-serif;font-size:12px;outline:none;">
         <button onclick="aRefreshAll()" style="padding:6px 14px;border-radius:8px;background:#c0392b;color:white;border:none;font-family:'Outfit',sans-serif;font-size:12px;font-weight:800;cursor:pointer;">↻ Load</button>
         <button onclick="exportACSV()" style="padding:6px 12px;border-radius:8px;background:#242830;color:#9aa0b0;border:1px solid rgba(255,255,255,0.07);font-family:'Outfit',sans-serif;font-size:12px;font-weight:700;cursor:pointer;">📊 CSV</button>
         <button onclick="toggleAnalyticsPanel()" style="padding:6px 12px;border-radius:8px;background:rgba(192,57,43,0.15);border:1px solid rgba(192,57,43,0.3);color:#c0392b;font-family:'Outfit',sans-serif;font-size:12px;font-weight:800;cursor:pointer;">✕ Close</button>
@@ -861,9 +861,9 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
         </div>
         <div style="display:flex;gap:7px;flex-wrap:wrap;align-items:center;">
   <span style="font-size:12px;color:var(--text2);">From</span>
-  <input type="date" id="closing-date-from" style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:6px 10px;color:var(--text);font-family:'Outfit',sans-serif;font-size:13px;outline:none;">
+  <input type="datetime-local" step="60" id="closing-date-from" style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:6px 10px;color:var(--text);font-family:'Outfit',sans-serif;font-size:13px;outline:none;">
   <span style="font-size:12px;color:var(--text2);">To</span>
-  <input type="date" id="closing-date-to" style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:6px 10px;color:var(--text);font-family:'Outfit',sans-serif;font-size:13px;outline:none;">
+  <input type="datetime-local" step="60" id="closing-date-to" style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:6px 10px;color:var(--text);font-family:'Outfit',sans-serif;font-size:13px;outline:none;">
   <button class="refresh-btn" onclick="renderClosingReport()">↻ Load</button>
   <button class="print-report-btn" onclick="printClosingReport()">🖨️ Print Report</button>
   <button class="print-report-btn" onclick="exportClosingExcel()" style="color:var(--green);border-color:var(--green);">📊 Export Excel</button>
@@ -884,10 +884,10 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
         <div class="section-title-bar">📅 Shift History</div>
         <div style="display:flex;gap:10px;align-items:center;">
           <span style="font-size:12px;color:var(--text2);">From</span>
-          <input type="date" id="history-date-picker" 
+          <input type="datetime-local" step="60" id="history-date-picker" 
             style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:7px 12px;color:var(--text);font-family:'Outfit',sans-serif;font-size:14px;outline:none;">
           <span style="font-size:12px;color:var(--text2);">To</span>
-          <input type="date" id="history-date-to-picker" 
+          <input type="datetime-local" step="60" id="history-date-to-picker" 
             style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:7px 12px;color:var(--text);font-family:'Outfit',sans-serif;font-size:14px;outline:none;">
           <input type="hidden" id="history-branch-picker" value="MULTAN">
           <button class="refresh-btn" onclick="loadHistoryForRange(document.getElementById('history-date-picker').value, document.getElementById('history-date-to-picker').value)">↻ Load</button>
@@ -1178,6 +1178,28 @@ const STAFF_CACHE_KEY = 'crustify_staff_cache';
 let isOnline = navigator.onLine;
 let syncInProgress = false;
 
+function getPendingQueuedTxRows(branch) {
+  try {
+    return getQueue()
+      .filter(item => item.table === 'shift_transactions' && item.op === 'insert')
+      .flatMap(item => (item.payload || []).map(row => ({ ...row, _pending: true })))
+      .filter(row => row.branch === branch);
+  } catch(e) { return []; }
+}
+function mergeInPendingTx(txs, branch, fromDateISO, toDateISO) {
+  const pending = getPendingQueuedTxRows(branch).filter(r => {
+    if (!r.created_at) return true;
+    return (!fromDateISO || r.created_at >= fromDateISO) && (!toDateISO || r.created_at <= toDateISO);
+  });
+  if (!pending.length) return txs;
+  const known = new Set(txs.map(t => t.bill_no + '|' + t.method + '|' + t.total));
+  pending.forEach(p => {
+    const key = p.bill_no + '|' + p.method + '|' + p.total;
+    if (!known.has(key)) txs.push(p);
+  });
+  return txs.sort((a,b) => new Date(a.created_at) - new Date(b.created_at));
+}
+
 function getQueue() {
   try { return JSON.parse(localStorage.getItem(OFFLINE_QUEUE_KEY) || '[]'); }
   catch(e) { return []; }
@@ -1188,6 +1210,9 @@ function saveQueue(q) {
 }
 function queueOfflineAction(table, op, payload, match) {
   const q = getQueue();
+  if (table === 'shift_transactions' && op === 'insert' && Array.isArray(payload)) {
+    payload = payload.map(r => ({ ...r, created_at: r.created_at || new Date().toISOString() }));
+  }
   q.push({ id: Date.now()+'-'+Math.random().toString(36).slice(2), table, op, payload, match, ts: Date.now() });
   saveQueue(q);
 }
@@ -1210,13 +1235,55 @@ function updateOfflineBadge() {
     badge.style.display = 'none';
   }
 }
+function persistLocalTables() {
+  try { localStorage.setItem('crustify_tables_' + activeBranch, JSON.stringify(tableOrders)); }
+  catch(e) { console.error('persistLocalTables failed', e); }
+}
+function loadLocalTables() {
+  try { return JSON.parse(localStorage.getItem('crustify_tables_' + activeBranch) || '{}'); }
+  catch(e) { return {}; }
+}
+function _markTableRemoved(tname) {
+  try {
+    const key = 'crustify_removed_' + activeBranch;
+    const set = JSON.parse(localStorage.getItem(key) || '[]');
+    if (!set.includes(tname)) { set.push(tname); localStorage.setItem(key, JSON.stringify(set)); }
+  } catch(e) {}
+}
+function _clearTombstone(tname) {
+  try {
+    const set = JSON.parse(localStorage.getItem('crustify_removed_' + activeBranch) || '[]').filter(t => t !== tname);
+    localStorage.setItem('crustify_removed_' + activeBranch, JSON.stringify(set));
+  } catch(e) {}
+}
+function _getRemovedTombstones() {
+  try { return JSON.parse(localStorage.getItem('crustify_removed_' + activeBranch) || '[]'); }
+  catch(e) { return []; }
+}
+function persistLocalCompleted() {
+  try {
+    localStorage.setItem('crustify_completed_' + activeBranch + '_' + todayKey(), JSON.stringify({
+      completedOrders, billCounter, openingBalance, cashInHand, salesTotal,
+      paidOrderIds: [...paidOrderIds], voidedOrderIds: [...voidedOrderIds]
+    }));
+  } catch(e) { console.error('persistLocalCompleted failed', e); }
+}
+function loadLocalCompleted() {
+  try {
+    const raw = localStorage.getItem('crustify_completed_' + activeBranch + '_' + todayKey());
+    return raw ? JSON.parse(raw) : null;
+  } catch(e) { return null; }
+}
 
 async function sbWrite(table, op, payload, match) {
   if (!sb) return { error:'no-client' };
   if (!isOnline) { queueOfflineAction(table, op, payload, match); return { queued:true }; }
   try {
     let res;
-    if (op === 'insert') res = await sb.from(table).insert(payload).select();
+    if (op === 'insert' && payload && payload[0] && payload[0].id) {
+      res = await sb.from(table).upsert(payload, {onConflict:'id'}).select();
+    }
+    else if (op === 'insert') res = await sb.from(table).insert(payload).select();
     else if (op === 'upsert') res = await sb.from(table).upsert(payload, match?.onConflict ? {onConflict:match.onConflict} : undefined).select();
     else if (op === 'update') {
       let q = sb.from(table).update(payload);
@@ -1244,19 +1311,26 @@ async function flushOfflineQueue() {
   const remaining = [];
   for (const item of q) {
     try {
+      if (item.table === 'inventory_ops') {
+        await _runInventoryOp(item.op, item.payload);
+        continue;
+      }
       let res;
-      if (item.op === 'insert') res = await sb.from(item.table).insert(item.payload);
+      if (item.op === 'insert' && item.payload && item.payload[0] && item.payload[0].id) {
+        res = await sb.from(item.table).upsert(item.payload, {onConflict:'id'});
+      }
+      else if (item.op === 'insert') res = await sb.from(item.table).insert(item.payload);
       else if (item.op === 'upsert') res = await sb.from(item.table).upsert(item.payload, item.match?.onConflict ? {onConflict:item.match.onConflict} : undefined);
-      else if (item.op === 'update') {
-        let qy = sb.from(item.table).update(item.payload);
-        (item.match?.eq||[]).forEach(([k,v]) => qy = qy.eq(k,v));
-        res = await qy;
-      } else if (item.op === 'delete') {
+      else if (item.op === 'delete') {
         let qy = sb.from(item.table).delete();
         (item.match?.eq||[]).forEach(([k,v]) => qy = qy.eq(k,v));
         res = await qy;
       }
       if (res.error) throw res.error;
+      if (item.table === 'active_tables' && item.op === 'delete') {
+        const tnameMatch = (item.match?.eq || []).find(([k]) => k === 'table_name');
+        if (tnameMatch) _clearTombstone(tnameMatch[1]);
+      }
     } catch(e) { remaining.push(item); }
   }
   saveQueue(remaining);
@@ -1288,6 +1362,28 @@ const BRANCHES = {
 
 // Staff PINs — Admin PIN 1234 is master override
 const STAFF_PINS = { 'Admin':'1234', 'Manager':'5678', 'Cashier':'0000', 'Ali':'1111', 'Usman':'2222', 'Sana':'3333', 'Bilal':'4444' };
+// ══════════════════════════════════
+// RECIPE CACHE (offline-safe — deduction doesn't need network to know what to deduct)
+// ══════════════════════════════════
+let _recipeCache = {};
+const RECIPE_CACHE_KEY = 'crustify_recipe_cache';
+
+async function loadRecipeCache() {
+  if (sb && isOnline) {
+    try {
+      const { data } = await sb.from('item_recipes').select('*').eq('branch', activeBranch);
+      if (data) {
+        _recipeCache = {};
+        data.forEach(r => { _recipeCache[r.item_name] = r.ingredients; });
+        localStorage.setItem(RECIPE_CACHE_KEY + '_' + activeBranch, JSON.stringify(_recipeCache));
+        return;
+      }
+    } catch(e) { console.warn('loadRecipeCache network failed, using local cache:', e.message); }
+  }
+  try {
+    _recipeCache = JSON.parse(localStorage.getItem(RECIPE_CACHE_KEY + '_' + activeBranch) || '{}');
+  } catch(e) { _recipeCache = {}; }
+}
 
 // TABLE MAP — mirrors QR param "table" values from the web app
 // Format: the QR URL is ?branch=MULTAN&table=A-1 → location stored as "A-1" or "A 1"
@@ -1505,6 +1601,7 @@ applyPOSPermissions();
   applyPOSOverrides().then(() => {
     fullRefresh();
     renderMenu();
+    loadRecipeCache();
     showToast('Welcome, ' + currentStaff + '! Shift started. 🔥', 'success');
   });
   updateOfflineBadge();
@@ -1588,6 +1685,10 @@ function todayKey() {
   const pkTime = new Date(now.getTime() + (5 * 60 * 60 * 1000));
   return pkTime.toISOString().slice(0, 10);
 }
+function _dtLocalToISO(val) {
+  if (!val) return null;
+  return new Date(val + ':00+05:00').toISOString(); // datetime-local has no TZ — treat as Pakistan time
+}
 function convertQtyToUnit(qty, fromUnit, toUnit) {
   if (!fromUnit || !toUnit) return qty;
   const f = fromUnit.toLowerCase(), t = toUnit.toLowerCase();
@@ -1600,37 +1701,50 @@ function convertQtyToUnit(qty, fromUnit, toUnit) {
 }
 
 async function deductInventoryForSale(sale, bizdayOverride) {
-  if (!sb) return;
-  try {
-    const { data: recipes } = await sb.from('item_recipes').select('*').eq('branch', activeBranch);
-    const recipeMap = {};
-    (recipes||[]).forEach(r => recipeMap[r.item_name] = r.ingredients);
   const bizday = bizdayOverride || todayKey();
-    for (const item of sale.items) {
-      if (item.returned) continue;
-      const recipe = recipeMap[item.name];
-      if (!recipe) continue;
-      for (const ing of recipe) {
-        if (!ing.ingredient_id) continue;
-        const rawQty = ing.qty * item.qty; // in the recipe's own unit (e.g. g)
-        const { data: cur } = await sb.from('ingredients').select('currentstock,unit').eq('id', ing.ingredient_id).single();
-        const masterUnit = cur?.unit || ing.unit;
-        const useQty = convertQtyToUnit(rawQty, ing.unit, masterUnit); // now in master stock unit (e.g. kg)
-        const newStock = Math.max(0, (cur?.currentstock||0) - useQty);
-        await sb.from('ingredients').update({ currentstock: newStock, updatedat: new Date().toISOString() }).eq('id', ing.ingredient_id);
-        await sb.from('pos_consumption').insert([{
-  id: Date.now()+'-'+Math.random().toString(36).slice(2),
-  branch: activeBranch, bizday, ingredient_id: ing.ingredient_id,
-  itemname: ing.name, qty: useQty, unit: masterUnit,
-  bill_no: sale.billNo || null
-}]);
-      }
+  for (const item of sale.items) {
+    if (item.returned) continue;
+    const recipe = _recipeCache[item.name];
+    if (!recipe) continue;
+    for (const ing of recipe) {
+      if (!ing.ingredient_id) continue;
+      const rawQty = ing.qty * item.qty;
+      await sbInventoryOp('deduct', {
+        ingredient_id: ing.ingredient_id,
+        rawQty, fromUnit: ing.unit,
+        itemName: ing.name,
+        branch: activeBranch, bizday,
+        billNo: sale.billNo || null
+      });
     }
-  } catch(e) { console.error('deductInventoryForSale', e); }
+  }
 }
-async function restoreInventoryForBill(billNo, branch, bizday) {
-  if (!sb || !billNo) return;
+
+async function sbInventoryOp(opType, data) {
+  if (!sb) return;
+  if (!isOnline) { queueOfflineAction('inventory_ops', opType, data, null); return; }
   try {
+    await _runInventoryOp(opType, data);
+  } catch(e) {
+    console.warn('Inventory op failed — queued offline:', opType, e.message);
+    queueOfflineAction('inventory_ops', opType, data, null);
+  }
+}
+
+async function _runInventoryOp(opType, data) {
+  if (opType === 'deduct') {
+    const { ingredient_id, rawQty, fromUnit, itemName, branch, bizday, billNo } = data;
+    const { data: cur } = await sb.from('ingredients').select('currentstock,unit').eq('id', ingredient_id).single();
+    const masterUnit = cur?.unit || fromUnit;
+    const useQty = convertQtyToUnit(rawQty, fromUnit, masterUnit);
+    const newStock = Math.max(0, (cur?.currentstock||0) - useQty);
+    await sb.from('ingredients').update({ currentstock: newStock, updatedat: new Date().toISOString() }).eq('id', ingredient_id);
+    await sb.from('pos_consumption').insert([{
+      id: Date.now()+'-'+Math.random().toString(36).slice(2),
+      branch, bizday, ingredient_id, itemname: itemName, qty: useQty, unit: masterUnit, bill_no: billNo || null
+    }]);
+  } else if (opType === 'restore_bill') {
+    const { billNo, branch, bizday } = data;
     let q = sb.from('pos_consumption').select('*').eq('bill_no', billNo).eq('branch', branch);
     if (bizday) q = q.eq('bizday', bizday);
     const { data: rows } = await q;
@@ -1641,12 +1755,8 @@ async function restoreInventoryForBill(billNo, branch, bizday) {
       await sb.from('ingredients').update({ currentstock: newStock, updatedat: new Date().toISOString() }).eq('id', row.ingredient_id);
     }
     await sb.from('pos_consumption').delete().eq('bill_no', billNo).eq('branch', branch);
-  } catch(e) { console.error('restoreInventoryForBill', e); }
-}
-
-async function restoreInventoryForDay(branch, bizday) {
-  if (!sb) return;
-  try {
+  } else if (opType === 'restore_day') {
+    const { branch, bizday } = data;
     const { data: rows } = await sb.from('pos_consumption').select('*').eq('branch', branch).eq('bizday', bizday);
     if (!rows || !rows.length) return;
     const agg = {};
@@ -1657,7 +1767,16 @@ async function restoreInventoryForDay(branch, bizday) {
       await sb.from('ingredients').update({ currentstock: newStock, updatedat: new Date().toISOString() }).eq('id', ingId);
     }
     await sb.from('pos_consumption').delete().eq('branch', branch).eq('bizday', bizday);
-  } catch(e) { console.error('restoreInventoryForDay', e); }
+  }
+}
+
+async function restoreInventoryForBill(billNo, branch, bizday) {
+  if (!billNo) return;
+  await sbInventoryOp('restore_bill', { billNo, branch, bizday: bizday || null });
+}
+
+async function restoreInventoryForDay(branch, bizday) {
+  await sbInventoryOp('restore_day', { branch, bizday });
 }
 // ══════════════════════════════════
 // CLOCK & LIVE RELOAD
@@ -2034,6 +2153,10 @@ let _paidIdsCacheTime = 0;
 // ════════════════════════════════════════════════════════
  
 async function _saveActiveTable(tname, orderData) {
+  if (orderData) { tableOrders[tname] = orderData; _clearTombstone(tname); }
+  else { delete tableOrders[tname]; _markTableRemoved(tname); }
+  persistLocalTables(); // survives refresh even if the write below never fires
+
   if (!sb) return;
   try {
     if (!orderData) {
@@ -2048,13 +2171,23 @@ async function _saveActiveTable(tname, orderData) {
 }
  
 async function _loadActiveTables() {
+  // Seed from the local safety-net cache FIRST — guarantees anything opened
+  // or edited while offline (not yet synced) survives a refresh, even if
+  // the cloud fetch below fails or is stale.
+  const localTables = loadLocalTables();
+  const tombstones = _getRemovedTombstones();
+  for (const tname in localTables) {
+    if (tombstones.includes(tname)) continue; // removed locally (e.g. paid offline) — don't resurrect
+    if (!tableOrders[tname]) tableOrders[tname] = localTables[tname];
+  }
+
   if (!sb) return;
   try {
     const { data, error } = await sb.from('active_tables')
       .select('*').eq('branch', activeBranch);
     if (error) {
       console.error('active_tables load failed:', error.message);
-      showToast('⚠️ Could not restore open tables — ' + error.message, 'error');
+      showToast('⚠️ Could not reach cloud — showing locally saved tables only', 'error');
       return;
     }
     if (!data || !data.length) return;
@@ -2094,6 +2227,7 @@ async function _loadActiveTables() {
       const order = row.order_data;
 
       if (!tname || !order) { staleRows.push(tname); continue; }
+      if (tombstones.includes(tname)) continue; // locally marked removed — stale cloud row, ignore
       if (tableOrders[tname]) continue;
 
       // Check 1: kitchen_order_id was explicitly paid — always skip
@@ -2374,10 +2508,10 @@ function switchView(v) {
   if (v==='delivery') renderDeliveryView();
   if (v === 'history') {
   const today  = todayKey();
-  document.getElementById('history-date-picker').value = today;
-  document.getElementById('history-date-to-picker').value = today;
+  document.getElementById('history-date-picker').value = today + 'T00:00';
+  document.getElementById('history-date-to-picker').value = today + 'T23:59';
   document.getElementById('history-branch-picker').value = activeBranch;
-  loadHistoryForRange(today, today);
+  loadHistoryForRange(today + 'T00:00', today + 'T23:59');
 }
 }
 
@@ -3560,10 +3694,11 @@ async function sendToKitchen() {
     showToast('Order saved! 🔥','success');
     return;
   }
-  const obj = { type:currentOrder.type, location:location, items:itemsText, status:'WAITING', subtotal:grand, delivery_fee:delCharge, branch:activeBranch, customer_name:custName||null, phone:custPhone||null, source:'POS' };
+  const clientId = (crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now()+'-'+Math.random().toString(36).slice(2));
+  const obj = { id: clientId, type:currentOrder.type, location:location, items:itemsText, status:'WAITING', subtotal:grand, delivery_fee:delCharge, branch:activeBranch, customer_name:custName||null, phone:custPhone||null, source:'POS' };
+  currentOrder.id = clientId; // set immediately — unblocks Print/Collect even while queued offline
   try {
-    const res = await sbWrite('kitchen_orders', 'insert', [obj]);
-    if (res && res.data && res.data[0]) { currentOrder.id = res.data[0].id; }
+    await sbWrite('kitchen_orders', 'insert', [obj]);
     currentOrder.sentToKitchen = true;
     await _assignKotNumber();
     saveTableOrder(); updateActionButtonsState(); showToast('Sent to kitchen! 🔥','success');
@@ -3679,8 +3814,10 @@ async function markTakeawayPaid() {
   _saveActiveTable(currentOrder.table, tableOrders[currentOrder.table]); // ← this line is missing
 }
   completedOrders.push(sale);
+  saveTodaySales();
   deductInventoryForSale(sale);
   await sbWrite('shift_transactions', 'insert', [{
+    id: (crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now()+'-'+Math.random().toString(36).slice(2)),
     branch: activeBranch, date: todayKey(),
     bill_no: sale.billNo, type: sale.type,
     table_loc: sale.table || '',
@@ -3708,16 +3845,8 @@ async function markTakeawayPaid() {
   document.getElementById('bar-billno').textContent = String(billCounter).padStart(3,'0');
   saveTodaySales();
   printTakeawaySlip(sale);
-  // Hard delete from active_tables so refresh never restores a paid takeaway
   const _twTable = currentOrder.table;
-  if (_twTable) {
-    delete tableOrders[_twTable];
-    if (sb) {
-      sb.from('active_tables').delete()
-        .eq('branch', activeBranch).eq('table_name', _twTable)
-        .catch(e => console.error('TW active_tables delete:', e));
-    }
-  }
+  if (_twTable) { await _saveActiveTable(_twTable, null); }
   currentOrder = { table: null, type: 'Dine-In', items: [], id: null };
   switchView('tables');
   renderTableMap();
@@ -3852,8 +3981,10 @@ async function completePayment() {
     };
  
     completedOrders.push(sale);
+    saveTodaySales(); // persist locally right away — survives a refresh even offline
     deductInventoryForSale(sale);
     await sbWrite('shift_transactions', 'insert', [{
+      id: (crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now()+'-'+Math.random().toString(36).slice(2)),
       branch: activeBranch, date: todayKey(),
       bill_no: sale.billNo, type: sale.type,
       table_loc: sale.table || '',
@@ -3883,20 +4014,10 @@ items_text: sale.items.map(i => `${i.qty}x ${i.name}`).join(', ') + sale.riderTa
     if (!currentOrder.id && !currentOrder.sentToKitchen) await sendToKitchen();
     if (currentOrder.id) paidOrderIds.add(currentOrder.id);
  
-    // Remove from cloud active_tables — hard delete so refresh never restores a paid table
+    // Routed through _saveActiveTable — queued + tombstoned if offline,
+    // instead of silently failing and letting the table reappear "open".
     const _paidTable = currentOrder.table;
-    if (_paidTable) {
-      delete tableOrders[_paidTable];
-      if (sb) {
-        // Fire-and-forget but also await — belt and suspenders
-        try {
-          await sb.from('active_tables').delete()
-            .eq('branch', activeBranch)
-            .eq('table_name', _paidTable);
-          console.log('✅ active_tables row deleted for', _paidTable);
-        } catch(e) { console.error('active_tables delete failed:', e); }
-      }
-    }
+    if (_paidTable) { await _saveActiveTable(_paidTable, null); }
  
     closeModal('pay-modal');
     printReceipt(sale);
@@ -4496,21 +4617,24 @@ const totalSales = completedOrders.filter(o=>!['cash-in','cash-out'].includes(o.
 async function renderClosingReport() {
   const fromEl = document.getElementById('closing-date-from');
   const toEl = document.getElementById('closing-date-to');
-  if (!fromEl.value) fromEl.value = todayKey();
-  if (!toEl.value) toEl.value = todayKey();
-  const fromDate = fromEl.value, toDate = toEl.value;
+  if (!fromEl.value) fromEl.value = todayKey() + 'T00:00';
+  if (!toEl.value) toEl.value = todayKey() + 'T23:59';
+  const fromDate = fromEl.value.slice(0,10), toDate = toEl.value.slice(0,10);
 
   document.getElementById('closing-date').textContent =
-    (fromDate === toDate ? fromDate : fromDate + ' → ' + toDate) + ' | ' + activeBranch;
+    fromEl.value.replace('T',' ') + ' → ' + toEl.value.replace('T',' ') + ' | ' + activeBranch;
 
   let txs = [];
   try {
     const { data } = await sb.from('shift_transactions')
       .select('*').eq('branch', activeBranch)
-      .gte('date', fromDate).lte('date', toDate)
+      .gte('created_at', _dtLocalToISO(fromEl.value)).lte('created_at', _dtLocalToISO(toEl.value))
       .order('created_at', { ascending: true });
     txs = data || [];
-  } catch(e) { showToast('Could not load report', 'error'); return; }
+  } catch(e) { txs = []; } // don't bail — offline queue may still have today's sales
+  txs = mergeInPendingTx(txs, activeBranch, fromEl.value + ':00+05:00', toEl.value + ':00+05:00');
+  const pendingCount = txs.filter(t => t._pending).length;
+  if (pendingCount) showToast(pendingCount + ' sale(s) not yet synced — included from local queue', 'error');
 
   const sales = txs.filter(t => !['cash-in','cash-out'].includes(t.method));
   const billsOnly = sales.filter(t => !['void','return','expense','discarded','deleted-delivery','item-void'].includes(t.method));
@@ -4624,17 +4748,21 @@ async function renderClosingReport() {
 }
 
 async function printClosingReport() {
-  const fromDate = document.getElementById('closing-date-from').value || todayKey();
-  const toDate = document.getElementById('closing-date-to').value || todayKey();
+  const fromVal = document.getElementById('closing-date-from').value || (todayKey() + 'T00:00');
+  const toVal   = document.getElementById('closing-date-to').value   || (todayKey() + 'T23:59');
+  const fromDate = fromVal.slice(0,10), toDate = toVal.slice(0,10);
 
   let txs = [];
   try {
     const { data } = await sb.from('shift_transactions')
       .select('*').eq('branch', activeBranch)
-      .gte('date', fromDate).lte('date', toDate)
+      .gte('created_at', _dtLocalToISO(fromVal)).lte('created_at', _dtLocalToISO(toVal))
       .order('created_at', { ascending: true });
     txs = data || [];
-  } catch(e) { showToast('Could not load report for print', 'error'); return; }
+  } catch(e) { txs = []; }
+  txs = mergeInPendingTx(txs, activeBranch, fromVal + ':00+05:00', toVal + ':00+05:00');
+  const pendingCount = txs.filter(t => t._pending).length;
+  if (pendingCount) showToast(pendingCount + ' sale(s) not yet synced — included from local queue', 'error');
 
   const sales = txs.filter(t => !['cash-in','cash-out'].includes(t.method));
   const billsOnly = sales.filter(t => !['void','return','expense','discarded','deleted-delivery','item-void'].includes(t.method));
@@ -4682,17 +4810,21 @@ async function printClosingReport() {
   }, 500);
 }
 async function exportClosingExcel() {
-  const fromDate = document.getElementById('closing-date-from').value || todayKey();
-  const toDate = document.getElementById('closing-date-to').value || todayKey();
+  const fromVal = document.getElementById('closing-date-from').value || (todayKey() + 'T00:00');
+  const toVal   = document.getElementById('closing-date-to').value   || (todayKey() + 'T23:59');
+  const fromDate = fromVal.slice(0,10), toDate = toVal.slice(0,10);
 
   let txs = [];
   try {
     const { data } = await sb.from('shift_transactions')
       .select('*').eq('branch', activeBranch)
-      .gte('date', fromDate).lte('date', toDate)
+      .gte('created_at', _dtLocalToISO(fromVal)).lte('created_at', _dtLocalToISO(toVal))
       .order('created_at', { ascending: true });
     txs = data || [];
-  } catch(e) { showToast('Could not load report for export', 'error'); return; }
+  } catch(e) { txs = []; }
+  txs = mergeInPendingTx(txs, activeBranch, fromVal + ':00+05:00', toVal + ':00+05:00');
+  const pendingCount = txs.filter(t => t._pending).length;
+  if (pendingCount) showToast(pendingCount + ' sale(s) not yet synced — included from local queue', 'error');
 
   if (!txs.length) { showToast('No data to export for selected range', 'error'); return; }
 
@@ -4789,6 +4921,7 @@ async function exportClosingExcel() {
 // LOCAL STORAGE
 // ══════════════════════════════════
 function saveTodaySales() {
+  persistLocalCompleted();
 }
 async function loadTodaySales() {
   if (!sb) return;
@@ -4809,6 +4942,7 @@ async function loadTodaySales() {
     if (closedCheck) {
       // Shift was formally closed via the Close button — start fresh
       openingBalance = 0; billCounter = 1; completedOrders = []; cashInHand = 0;
+      try { localStorage.removeItem('crustify_completed_' + activeBranch + '_' + todayK); } catch(e) {}
       document.getElementById('bar-cash').textContent = 'Rs 0';
       document.getElementById('bar-billno').textContent = '001';
       document.getElementById('opening-bal-input').value = '';
@@ -4849,6 +4983,23 @@ async function loadTodaySales() {
       if (nums.length) billCounter = Math.max(...nums) + 1;
     }
 
+    // Merge in sales that only exist in the local cache — i.e. made while
+    // offline and not yet synced. Without this a refresh before the queue
+    // flushes makes the sale (and its reprint) disappear from the till.
+    const localCache = loadLocalCompleted();
+    if (localCache && localCache.completedOrders && localCache.completedOrders.length) {
+      const known = new Set(completedOrders.map(o => o.billNo + '|' + o.method + '|' + o.total));
+      localCache.completedOrders.forEach(o => {
+        const key = o.billNo + '|' + o.method + '|' + o.total;
+        if (!known.has(key)) completedOrders.push(o);
+      });
+      completedOrders.sort((a,b) => new Date(a.time) - new Date(b.time));
+      if (localCache.paidOrderIds) localCache.paidOrderIds.forEach(id => paidOrderIds.add(id));
+      if (localCache.voidedOrderIds) localCache.voidedOrderIds.forEach(id => voidedOrderIds.add(id));
+      const nums2 = completedOrders.map(o => parseInt(o.billNo)).filter(n => !isNaN(n) && n > 0);
+      if (nums2.length) billCounter = Math.max(billCounter, Math.max(...nums2) + 1);
+    }
+
     // ── Recalculate totals ────────────────────────────────────────
     salesTotal = completedOrders
       .filter(o => !['cash-in','cash-out'].includes(o.method))
@@ -4860,6 +5011,7 @@ async function loadTodaySales() {
 
     document.getElementById('bar-cash').textContent = 'Rs ' + cashInHand;
     document.getElementById('bar-billno').textContent = String(billCounter).padStart(3,'0');
+    saveTodaySales();
 
     // ── Restore open tables (survives refresh) ────────────────────
     await _loadActiveTables();
@@ -5096,20 +5248,24 @@ async function loadHistoryForDate(dateStr) {
   return loadHistoryForRange(dateStr, dateStr);
 }
 
-async function loadHistoryForRange(fromDate, toDate) {
-  if (!fromDate) return;
-  if (!toDate) toDate = fromDate;
-  if (toDate < fromDate) { const tmp = fromDate; fromDate = toDate; toDate = tmp; }
+async function loadHistoryForRange(fromDateTime, toDateTime) {
+  if (!fromDateTime) return;
+  if (!toDateTime) toDateTime = fromDateTime;
+  if (toDateTime < fromDateTime) { const tmp = fromDateTime; fromDateTime = toDateTime; toDateTime = tmp; }
+  const fromDate = fromDateTime.slice(0,10), toDate = toDateTime.slice(0,10);
   const branch = document.getElementById('history-branch-picker').value;
   const content = document.getElementById('history-content');
   content.innerHTML = '<div style="text-align:center;padding:36px;color:var(--text3);">Loading...</div>';
 
   try {
-    const { data: txs } = await sb.from('shift_transactions')
+    const { data } = await sb.from('shift_transactions')
       .select('bill_no, type, table_loc, items_text, total, method, created_at, staff, date')
       .eq('branch', branch)
-      .gte('date', fromDate).lte('date', toDate)
+      .gte('created_at', _dtLocalToISO(fromDateTime)).lte('created_at', _dtLocalToISO(toDateTime))
       .order('created_at', { ascending: true });
+    let txs = mergeInPendingTx(data || [], branch, _dtLocalToISO(fromDateTime), _dtLocalToISO(toDateTime));
+    const pendingCount = txs.filter(t => t._pending).length;
+    if (pendingCount) showToast(pendingCount + ' sale(s) not yet synced — included from local queue', 'error');
 
     if (!txs || !txs.length) {
       content.innerHTML = `<div style="text-align:center;padding:48px;color:var(--text3);">No data found for ${fromDate}${toDate!==fromDate?' to '+toDate:''}</div>`;
@@ -5287,6 +5443,10 @@ function showToast(msg, type='success') {
   toastTimer = setTimeout(()=>t.classList.remove('show'), 2800);
 }
 async function closeAllShifts() {
+  const pendingNow = getQueue().length;
+  if (pendingNow > 0) {
+    if (!confirm('⚠️ ' + pendingNow + ' transaction(s) are still waiting to sync (offline/slow connection).\n\nClosing now will finalize the report WITHOUT them.\n\nWait for sync instead? Press Cancel to wait, OK to close anyway.')) return;
+  }
   if (!confirm('⚠️ WARNING: This will FINALIZE all sales and CLEAR all data.\n\nOnly use this after 2AM when ALL shifts are done.\n\nContinue?')) return;
   
   const adminPin = prompt('Enter Admin PIN to authorize:');
@@ -5306,25 +5466,29 @@ async function closeAllShifts() {
 
   await saveShiftReport();
 
-  if (sb) {
+  // Best-effort — just marks stray orders visually closed, not safety-critical.
+  if (sb && isOnline) {
     try {
       await sb.from('kitchen_orders')
         .update({ status: 'CLOSED', closed_at: new Date().toISOString(), closed_by: currentStaff })
         .eq('branch', activeBranch)
         .in('status', ['WAITING', 'PREPARING', 'READY']);
-      
-      await sb.from('shift_closures').insert([{
-        branch: activeBranch,
-        date: closedDate,
-        closed_at: new Date().toISOString(),
-        closed_by: currentStaff,
-        final_total: completedOrders
-          .filter(o => !['cash-in','cash-out'].includes(o.method))
-          .reduce((s,o) => s + o.total, 0),
-        bills_count: completedOrders.filter(o => !['cash-in','cash-out'].includes(o.method)).length
-      }]);
-    } catch(e) { console.error('Close orders error:', e); }
+    } catch(e) { console.warn('kitchen_orders close (non-critical):', e.message); }
   }
+
+  // CRITICAL: the actual closure record — must queue if it fails, never vanish.
+  const _queueBeforeClose = getQueue().length;
+  await sbWrite('shift_closures', 'insert', [{
+    branch: activeBranch,
+    date: closedDate,
+    closed_at: new Date().toISOString(),
+    closed_by: currentStaff,
+    final_total: completedOrders
+      .filter(o => !['cash-in','cash-out'].includes(o.method))
+      .reduce((s,o) => s + o.total, 0),
+    bills_count: completedOrders.filter(o => !['cash-in','cash-out'].includes(o.method)).length
+  }]);
+  const _closeGotQueued = getQueue().length > _queueBeforeClose;
 
   // Capture totals BEFORE clearing
   const allSales = completedOrders.filter(o => !['cash-in','cash-out','void'].includes(o.method));
@@ -5367,6 +5531,14 @@ async function closeAllShifts() {
   setTimeout(() => {
     window.print();
     setTimeout(() => {
+      if (_closeGotQueued || !isOnline) {
+        showToast('⚠️ Offline — closure queued but NOT yet synced. Data kept locally. Retry "Close Shifts" once online.', 'error');
+        updateOfflineBadge();
+        return; // do NOT wipe local data — nothing confirmed saved yet
+      }
+      localStorage.removeItem('crustify_completed_' + activeBranch + '_' + todayKey());
+      localStorage.removeItem('crustify_tables_' + activeBranch);
+      localStorage.removeItem('crustify_removed_' + activeBranch);
       completedOrders = [];
       tableOrders = {};
       openingBalance = 0;
@@ -5387,6 +5559,10 @@ async function closeAllShifts() {
 }
 
 async function closeAllShiftsAndArchive() {
+  const pendingNow = getQueue().length;
+  if (pendingNow > 0) {
+    if (!confirm('⚠️ ' + pendingNow + ' transaction(s) are still waiting to sync (offline/slow connection).\n\nArchiving now will finalize the report WITHOUT them.\n\nWait for sync instead? Press Cancel to wait, OK to archive anyway.')) return;
+  }
   if (!confirm('🔒 FINAL SHIFT CLOSE\n\nThis will:\n• Save all data to history\n• Print final report\n• START FRESH with 0\n\nContinue?')) return;
   
   const adminPin = prompt('Enter Admin PIN:');
@@ -5401,7 +5577,8 @@ async function closeAllShiftsAndArchive() {
 
   await saveShiftReport();
 
-  if (sb) {
+  // Best-effort — just marks stray orders visually closed, not safety-critical.
+  if (sb && isOnline) {
     try {
       await sb.from('kitchen_orders')
         .update({ 
@@ -5411,19 +5588,22 @@ async function closeAllShiftsAndArchive() {
         })
         .eq('branch', activeBranch)
         .in('status', ['WAITING', 'PREPARING', 'READY']);
-      
-      await sb.from('shift_closures').insert([{
-        branch: activeBranch,
-        date: closedDate,
-        closed_at: new Date().toISOString(),
-        closed_by: currentStaff,
-        final_total: completedOrders
-          .filter(o => !['cash-in','cash-out'].includes(o.method))
-          .reduce((s,o) => s + o.total, 0),
-        bills_count: completedOrders.filter(o => !['cash-in','cash-out'].includes(o.method)).length
-      }]);
-    } catch(e) { console.error('Archive error:', e); }
+    } catch(e) { console.warn('kitchen_orders close (non-critical):', e.message); }
   }
+
+  // CRITICAL: the actual closure record — must queue if it fails, never vanish.
+  const _queueBeforeArchive = getQueue().length;
+  await sbWrite('shift_closures', 'insert', [{
+    branch: activeBranch,
+    date: closedDate,
+    closed_at: new Date().toISOString(),
+    closed_by: currentStaff,
+    final_total: completedOrders
+      .filter(o => !['cash-in','cash-out'].includes(o.method))
+      .reduce((s,o) => s + o.total, 0),
+    bills_count: completedOrders.filter(o => !['cash-in','cash-out'].includes(o.method)).length
+  }]);
+  const _archiveGotQueued = getQueue().length > _queueBeforeArchive;
 
   // Capture totals BEFORE clearing
   const allSales = completedOrders.filter(o => !['cash-in','cash-out','void'].includes(o.method));
@@ -5459,6 +5639,14 @@ async function closeAllShiftsAndArchive() {
   setTimeout(() => {
     window.print();
     setTimeout(() => {
+      if (_archiveGotQueued || !isOnline) {
+        showToast('⚠️ Offline — archive queued but NOT yet synced. Data kept locally. Retry once online.', 'error');
+        updateOfflineBadge();
+        return; // do NOT wipe local data — nothing confirmed saved yet
+      }
+      localStorage.removeItem('crustify_completed_' + activeBranch + '_' + todayKey());
+      localStorage.removeItem('crustify_tables_' + activeBranch);
+      localStorage.removeItem('crustify_removed_' + activeBranch);
       completedOrders = [];
       tableOrders = {};
       openingBalance = 0;
@@ -5887,8 +6075,8 @@ function toggleAnalyticsPanel() {
   const isOpen = panel.style.display !== 'none';
   panel.style.display = isOpen ? 'none' : 'block';
   if (!isOpen) {
-    const today = new Date().toISOString().slice(0,10);
-    const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0,10);
+    const today = todayKey() + 'T23:59';
+    const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0,10) + 'T00:00';
     if (!document.getElementById('a-date-from').value) document.getElementById('a-date-from').value = monthStart;
     if (!document.getElementById('a-date-to').value) document.getElementById('a-date-to').value = today;
     loadInvIngredients();
@@ -5923,10 +6111,13 @@ async function aLoadTransactions() {
     const to = document.getElementById('a-date-to').value;
     const { data } = await sb.from('shift_transactions')
       .select('*').eq('branch', activeBranch)
-      .gte('date', from).lte('date', to)
+      .gte('created_at', _dtLocalToISO(from)).lte('created_at', _dtLocalToISO(to))
       .not('method','in','("cash-in","cash-out","void")')
       .order('created_at', {ascending:true});
-    _aTxData = data || [];
+    _aTxData = mergeInPendingTx(data || [], activeBranch, _dtLocalToISO(from), _dtLocalToISO(to))
+      .filter(t => !['cash-in','cash-out','void'].includes(t.method));
+    const pendingCount = _aTxData.filter(t => t._pending).length;
+    if (pendingCount) showToast(pendingCount + ' sale(s) not yet synced — included from local queue', 'error');
     return _aTxData;
   } catch(e) { console.error('aLoadTransactions:', e); return []; }
 }
@@ -6262,7 +6453,8 @@ async function aSaveRecipe() {
   try {
     const{error}=await sb.from('item_recipes').upsert([{branch:activeBranch,item_name:itemName,ingredients,updated_at:new Date().toISOString()}],{onConflict:'branch,item_name'});
     if(error)throw error;
-    _aRecipes[itemName]=ingredients;
+    _recipeCache[itemName]=ingredients;
+    localStorage.setItem(RECIPE_CACHE_KEY + '_' + activeBranch, JSON.stringify(_recipeCache));
     showToast('Recipe saved for '+itemName+' ✅','success');
     aLoadAllRecipes();
   } catch(e){showToast('Save failed: '+e.message,'error');}
@@ -6279,7 +6471,8 @@ async function aDeleteRecipe(itemName, btn) {
   if(!confirm('Delete recipe for '+itemName+'?'))return;
   try {
     await sb.from('item_recipes').delete().eq('branch',activeBranch).eq('item_name',itemName);
-    delete _aRecipes[itemName];
+    delete _recipeCache[itemName];
+    localStorage.setItem(RECIPE_CACHE_KEY + '_' + activeBranch, JSON.stringify(_recipeCache));
     btn.closest('[style]').remove();
     showToast('Deleted','error');
   } catch(e){showToast('Delete failed','error');}
