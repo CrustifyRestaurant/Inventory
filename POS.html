@@ -3645,14 +3645,17 @@ function applySplitByAmount() {
 
 async function _assignKotNumber() {
   if (currentOrder.kotNo) return currentOrder.kotNo;
-  if (!sb) { currentOrder.kotNo = String(billCounter).padStart(3,'0'); return currentOrder.kotNo; }
+  if (!sb || !isOnline) { currentOrder.kotNo = String(billCounter).padStart(3,'0'); return currentOrder.kotNo; }
   try {
     const dayStart = new Date(); dayStart.setHours(0,0,0,0);
-    const { count } = await sb.from('kitchen_orders')
+    const { count, error } = await sb.from('kitchen_orders')
       .select('id', { count:'exact', head:true })
       .eq('branch', activeBranch)
       .gte('created_at', dayStart.toISOString());
-    currentOrder.kotNo = String((count||0)).padStart(3,'0');
+    if (error || count === null || count === undefined) {
+      throw error || new Error('no count returned');
+    }
+    currentOrder.kotNo = String(count).padStart(3,'0');
   } catch(e) {
     currentOrder.kotNo = String(billCounter).padStart(3,'0');
   }
