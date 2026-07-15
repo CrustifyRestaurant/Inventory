@@ -838,6 +838,14 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
           <button class="action-btn-sm" id="cash-expense-btn" style="background:rgba(230,126,34,0.15);color:var(--orange);border:1px solid rgba(230,126,34,0.3);" onclick="addExpense()">🧾 Expense</button>
         </div>
       </div>
+      <div style="display:flex;gap:7px;flex-wrap:wrap;align-items:center;margin-bottom:18px;">
+        <span style="font-size:12px;color:var(--text2);">From</span>
+        <input type="datetime-local" step="60" id="cash-date-from" style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:6px 10px;color:var(--text);font-family:'Outfit',sans-serif;font-size:13px;outline:none;">
+        <span style="font-size:12px;color:var(--text2);">To</span>
+        <input type="datetime-local" step="60" id="cash-date-to" style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:6px 10px;color:var(--text);font-family:'Outfit',sans-serif;font-size:13px;outline:none;">
+        <button class="refresh-btn" onclick="loadCashForRange(document.getElementById('cash-date-from').value, document.getElementById('cash-date-to').value)">↻ Load Range</button>
+        <button class="refresh-btn" onclick="printCashDrawerReport()" style="color:var(--green);border-color:var(--green);">🖨️ Print Report</button>
+      </div>
       <div class="opening-form">
         <div class="of-label">Opening Balance (Rs)</div>
         <input class="of-input" type="number" id="opening-bal-input" placeholder="0">
@@ -2502,7 +2510,14 @@ function switchView(v) {
   document.getElementById('view-'+v).classList.add('active');
   const navMap = {tables:0,delivery:1,cash:2,closing:3,history:4};
   if (navMap[v] !== undefined) document.querySelectorAll('.nav-btn')[navMap[v]]?.classList.add('active');
-  if (v==='cash') renderCashView();
+  if (v==='cash') {
+    const today = todayKey();
+    const fromEl = document.getElementById('cash-date-from');
+    const toEl = document.getElementById('cash-date-to');
+    if (fromEl && !fromEl.value) fromEl.value = today + 'T00:00';
+    if (toEl && !toEl.value) toEl.value = today + 'T23:59';
+    renderCashView();
+  }
   if (v==='closing') renderClosingReport();
   if (v==='tables') renderTableMap();
   if (v==='delivery') renderDeliveryView();
@@ -4559,31 +4574,33 @@ async function addCashOut() {
   saveTodaySales(); renderCashView(); showToast('Cash Out: Rs '+amt,'error');
 }
 
-function renderCashView() {
-  const cashSales = completedOrders.filter(o=>o.method==='cash').reduce((s,o)=>s+o.total,0);
-  const cardSales = completedOrders.filter(o=>o.method==='card').reduce((s,o)=>s+o.total,0);
-  const splitCash = completedOrders.filter(o=>o.method==='split').reduce((s,o)=>s+(o.splitCash||0),0);
-  const splitCard = completedOrders.filter(o=>o.method==='split').reduce((s,o)=>s+(o.splitCard||0),0);
+function renderCashView(txList, openingBal, isRange) {
+  const orders = txList || completedOrders;
+  const opening = openingBal !== undefined ? openingBal : openingBalance;
+  const cashSales = orders.filter(o=>o.method==='cash').reduce((s,o)=>s+o.total,0);
+  const cardSales = orders.filter(o=>o.method==='card').reduce((s,o)=>s+o.total,0);
+  const splitCash = orders.filter(o=>o.method==='split').reduce((s,o)=>s+(o.splitCash||0),0);
+  const splitCard = orders.filter(o=>o.method==='split').reduce((s,o)=>s+(o.splitCard||0),0);
   const totalCash = cashSales + splitCash;
   const totalCard = cardSales + splitCard;
-const totalSales = completedOrders.filter(o=>!['cash-in','cash-out'].includes(o.method)).reduce((s,o)=>s+o.total,0);
-  const totalDelFees = completedOrders.filter(o=>o.type==='Delivery').reduce((s,o)=>s+(o.deliveryCharge||0),0);
-  const shopSales = totalSales - totalDelFees;  const cashOuts = completedOrders.filter(o=>o.method==='cash-out').reduce((s,o)=>s+Math.abs(o.total),0);
-  const expenses = completedOrders.filter(o=>o.method==='expense').reduce((s,o)=>s+Math.abs(o.total),0);
-  const expected = openingBalance + totalCash - totalDelFees - cashOuts - expenses;
+const totalSales = orders.filter(o=>!['cash-in','cash-out'].includes(o.method)).reduce((s,o)=>s+o.total,0);
+  const totalDelFees = orders.filter(o=>o.type==='Delivery').reduce((s,o)=>s+(o.deliveryCharge||0),0);
+  const shopSales = totalSales - totalDelFees;  const cashOuts = orders.filter(o=>o.method==='cash-out').reduce((s,o)=>s+Math.abs(o.total),0);
+  const expenses = orders.filter(o=>o.method==='expense').reduce((s,o)=>s+Math.abs(o.total),0);
+  const expected = opening + totalCash - totalDelFees - cashOuts - expenses;
 
   document.getElementById('cash-cards').innerHTML = `
-    <div class="cash-card"><div class="cash-card-label">Opening Balance</div><div class="cash-card-value">Rs ${openingBalance}</div></div>
+    <div class="cash-card"><div class="cash-card-label">Opening Balance</div><div class="cash-card-value">Rs ${opening}</div></div>
 <div class="cash-card"><div class="cash-card-label">Cash Sales</div><div class="cash-card-value green">Rs ${totalCash - totalDelFees}</div></div>
     <div class="cash-card"><div class="cash-card-label">Delivery Fees (Rider)</div><div class="cash-card-value" style="color:var(--orange);">Rs ${totalDelFees}</div></div>
     <div class="cash-card"><div class="cash-card-label">Card Sales</div><div class="cash-card-value">Rs ${totalCard}</div></div>
     <div class="cash-card"><div class="cash-card-label">Shop Sales</div><div class="cash-card-value orange">Rs ${shopSales}</div></div>
 <div class="cash-card"><div class="cash-card-label">Expected in Drawer</div><div class="cash-card-value green">Rs ${expected}</div></div>
-<div class="cash-card"><div class="cash-card-label">Bills Today</div><div class="cash-card-value">${completedOrders.filter(o=>!['cash-in','cash-out'].includes(o.method)).length}</div></div>
-<div class="cash-card"><div class="cash-card-label">Expenses</div><div class="cash-card-value red">Rs ${completedOrders.filter(o=>o.method==='expense').reduce((s,o)=>s+Math.abs(o.total),0)}</div></div>
+<div class="cash-card"><div class="cash-card-label">Bills${isRange?'':' Today'}</div><div class="cash-card-value">${orders.filter(o=>!['cash-in','cash-out'].includes(o.method)).length}</div></div>
+<div class="cash-card"><div class="cash-card-label">Expenses</div><div class="cash-card-value red">Rs ${orders.filter(o=>o.method==='expense').reduce((s,o)=>s+Math.abs(o.total),0)}</div></div>
   `;
 
-  document.getElementById('tx-tbody').innerHTML = completedOrders.slice().reverse().map(o => `
+  document.getElementById('tx-tbody').innerHTML = orders.slice().reverse().map(o => `
     <tr>
       <td style="font-family:'Outfit',sans-serif;font-weight:700;color:var(--orange);">${o.billNo||'—'}</td>
       <td>${new Date(o.time).toLocaleTimeString('en-PK',{hour:'2-digit',minute:'2-digit',hour12:true})}</td>
@@ -4612,6 +4629,100 @@ const totalSales = completedOrders.filter(o=>!['cash-in','cash-out'].includes(o.
       </td>
     </tr>
   `).join('') || '<tr><td colspan="7" style="text-align:center;padding:18px;color:var(--text3);">No transactions yet</td></tr>';
+}
+
+// ══════════════════════════════════
+// CASH DRAWER — DATE RANGE VIEW + PRINT
+// ══════════════════════════════════
+let _cashViewTxs = null;
+let _cashViewOpening = 0;
+let _cashViewFrom = '';
+let _cashViewTo = '';
+
+async function loadCashForRange(fromVal, toVal) {
+  if (!fromVal) fromVal = todayKey() + 'T00:00';
+  if (!toVal) toVal = todayKey() + 'T23:59';
+  const fromDate = fromVal.slice(0,10);
+  let txs = [];
+  try {
+    const { data } = await sb.from('shift_transactions')
+      .select('*').eq('branch', activeBranch)
+      .gte('created_at', _dtLocalToISO(fromVal)).lte('created_at', _dtLocalToISO(toVal))
+      .order('created_at', { ascending: true });
+    txs = data || [];
+  } catch(e) { txs = []; }
+  txs = mergeInPendingTx(txs, activeBranch, fromVal + ':00+05:00', toVal + ':00+05:00');
+  const pendingCount = txs.filter(t => t._pending).length;
+  if (pendingCount) showToast(pendingCount + ' sale(s) not yet synced — included from local queue', 'error');
+
+  const mapped = txs.map(t => ({
+    billNo: t.bill_no, table: t.table_loc, type: t.type,
+    items: [], itemsText: t.items_text || '',
+    total: t.total, method: t.method, time: new Date(t.created_at),
+    staff: t.staff, deliveryAddress: t.delivery_address || '',
+    deliveryCharge: t.delivery_charge || 0
+  }));
+
+  let opening = 0;
+  try {
+    const { data: ob } = await sb.from('opening_balance').select('amount')
+      .eq('branch', activeBranch).eq('date', fromDate).maybeSingle();
+    if (ob) opening = ob.amount || 0;
+  } catch(e) {}
+
+  _cashViewTxs = mapped;
+  _cashViewOpening = opening;
+  _cashViewFrom = fromVal;
+  _cashViewTo = toVal;
+
+  const isToday = fromDate === todayKey() && toVal.slice(0,10) === todayKey();
+  renderCashView(mapped, opening, !isToday);
+  showToast('Cash drawer loaded for selected range ✅', 'success');
+}
+
+async function printCashDrawerReport() {
+  const fromVal = _cashViewFrom || document.getElementById('cash-date-from')?.value || (todayKey() + 'T00:00');
+  const toVal = _cashViewTo || document.getElementById('cash-date-to')?.value || (todayKey() + 'T23:59');
+  const orders = _cashViewTxs || completedOrders;
+  const opening = _cashViewTxs ? _cashViewOpening : openingBalance;
+
+  const cashSales = orders.filter(o=>o.method==='cash').reduce((s,o)=>s+o.total,0);
+  const cardSales = orders.filter(o=>o.method==='card').reduce((s,o)=>s+o.total,0);
+  const splitCash = orders.filter(o=>o.method==='split').reduce((s,o)=>s+(o.splitCash||0),0);
+  const splitCard = orders.filter(o=>o.method==='split').reduce((s,o)=>s+(o.splitCard||0),0);
+  const totalCash = cashSales + splitCash;
+  const totalCard = cardSales + splitCard;
+  const totalDelFees = orders.filter(o=>o.type==='Delivery').reduce((s,o)=>s+(o.deliveryCharge||0),0);
+  const cashOuts = orders.filter(o=>o.method==='cash-out').reduce((s,o)=>s+Math.abs(o.total),0);
+  const expenses = orders.filter(o=>o.method==='expense').reduce((s,o)=>s+Math.abs(o.total),0);
+  const expected = opening + totalCash - totalDelFees - cashOuts - expenses;
+  const billsCount = orders.filter(o=>!['cash-in','cash-out'].includes(o.method)).length;
+
+  const fromLabel = fromVal.replace('T',' ');
+  const toLabel = toVal.replace('T',' ');
+
+  document.getElementById('print-area').innerHTML = `
+    <div style="font-family:'Courier New',monospace;color:black;padding:5px;width:72mm;">
+      <div style="text-align:center;font-size:17px;font-weight:900;">CRUSTIFY — ${activeBranch}</div>
+      <div style="text-align:center;font-size:12px;border-top:1px solid #000;border-bottom:1px solid #000;padding:2px;margin:2px 0;">CASH DRAWER REPORT</div>
+      <div style="font-size:11px;margin-bottom:4px;text-align:center;">${fromLabel} → ${toLabel}</div>
+      <div style="border-bottom:1px dashed #000;margin:3px 0;"></div>
+      <div style="font-size:13px;line-height:1.7;">
+        <div style="display:flex;justify-content:space-between;"><span>Bills:</span><span>${billsCount}</span></div>
+        <div style="display:flex;justify-content:space-between;"><span>Opening Balance:</span><span>Rs ${opening}</span></div>
+        <div style="display:flex;justify-content:space-between;"><span>Cash Sales:</span><span>Rs ${totalCash - totalDelFees}</span></div>
+        <div style="display:flex;justify-content:space-between;"><span>Card Sales:</span><span>Rs ${totalCard}</span></div>
+        <div style="display:flex;justify-content:space-between;"><span>Delivery Fees:</span><span>Rs ${totalDelFees}</span></div>
+        <div style="display:flex;justify-content:space-between;"><span>Cash Outs:</span><span>Rs ${cashOuts}</span></div>
+        <div style="display:flex;justify-content:space-between;"><span>Expenses:</span><span>Rs ${expenses}</span></div>
+        <div style="display:flex;justify-content:space-between;border-top:1px solid #000;padding-top:2px;font-weight:900;font-size:14px;"><span>Expected in Drawer:</span><span>Rs ${expected}</span></div>
+      </div>
+      <div style="border-top:1px dashed #000;margin-top:5px;padding-top:4px;font-size:11px;text-align:center;">Printed by: ${currentStaff} — ${new Date().toLocaleString('en-PK')}</div>
+    </div>`;
+  setTimeout(()=>{
+    window.print();
+    setTimeout(() => { document.getElementById('print-area').innerHTML=''; }, 3000);
+  }, 300);
 }
 
 // ══════════════════════════════════
