@@ -1195,15 +1195,17 @@ function getPendingQueuedTxRows(branch) {
   } catch(e) { return []; }
 }
 function mergeInPendingTx(txs, branch, fromDateISO, toDateISO) {
+  const fromMs = fromDateISO ? new Date(fromDateISO).getTime() : -Infinity;
+  const toMs   = toDateISO   ? new Date(toDateISO).getTime()   : Infinity;
   const pending = getPendingQueuedTxRows(branch).filter(r => {
     if (!r.created_at) return true;
-    return (!fromDateISO || r.created_at >= fromDateISO) && (!toDateISO || r.created_at <= toDateISO);
+    const t = new Date(r.created_at).getTime();
+    return t >= fromMs && t <= toMs;
   });
   if (!pending.length) return txs;
-  const known = new Set(txs.map(t => t.bill_no + '|' + t.method + '|' + t.total));
+  const known = new Set(txs.map(t => t.id).filter(Boolean));
   pending.forEach(p => {
-    const key = p.bill_no + '|' + p.method + '|' + p.total;
-    if (!known.has(key)) txs.push(p);
+    if (!p.id || !known.has(p.id)) txs.push(p);
   });
   return txs.sort((a,b) => new Date(a.created_at) - new Date(b.created_at));
 }
@@ -1311,9 +1313,30 @@ async function sbWrite(table, op, payload, match) {
   }
 }
 
+function _collapseActiveTableQueue(q) {
+  // Keep only the LAST queued write per (branch+table_name) for active_tables.
+  // Earlier upserts for the same table are stale once a later action exists —
+  // replaying them out of order is what resurrects paid/cleared tables.
+  const lastIdx = {};
+  q.forEach((item, idx) => {
+    if (item.table !== 'active_tables') return;
+    const key = item.op === 'delete'
+      ? (item.match?.eq || []).find(([k]) => k === 'table_name')?.[1]
+      : item.payload?.[0]?.table_name;
+    if (key) lastIdx[key] = idx;
+  });
+  return q.filter((item, idx) => {
+    if (item.table !== 'active_tables') return true;
+    const key = item.op === 'delete'
+      ? (item.match?.eq || []).find(([k]) => k === 'table_name')?.[1]
+      : item.payload?.[0]?.table_name;
+    return !key || lastIdx[key] === idx;
+  });
+}
+
 async function flushOfflineQueue() {
   if (syncInProgress || !isOnline || !sb) return;
-  let q = getQueue();
+  let q = _collapseActiveTableQueue(getQueue());
   if (!q.length) return;
   syncInProgress = true; updateOfflineBadge();
   const remaining = [];
@@ -1329,6 +1352,11 @@ async function flushOfflineQueue() {
       }
       else if (item.op === 'insert') res = await sb.from(item.table).insert(item.payload);
       else if (item.op === 'upsert') res = await sb.from(item.table).upsert(item.payload, item.match?.onConflict ? {onConflict:item.match.onConflict} : undefined);
+      else if (item.op === 'update') {
+        let qy = sb.from(item.table).update(item.payload);
+        (item.match?.eq||[]).forEach(([k,v]) => qy = qy.eq(k,v));
+        res = await qy;
+      }
       else if (item.op === 'delete') {
         let qy = sb.from(item.table).delete();
         (item.match?.eq||[]).forEach(([k,v]) => qy = qy.eq(k,v));
@@ -1356,7 +1384,15 @@ setInterval(async () => {
     const { error } = await sb.from('staff').select('id').limit(1);
     const wasOffline = !isOnline;
     isOnline = !error;
-    if (wasOffline && isOnline) { showToast('Back online — syncing...', 'success'); flushOfflineQueue(); }
+    if (wasOffline && isOnline) {
+      showToast('Back online — syncing...', 'success');
+      flushOfflineQueue();
+    } else if (isOnline && getQueue().length > 0) {
+      // Queue didn't fully drain on the last attempt (transient error) —
+      // keep retrying instead of leaving it stuck until the next
+      // offline→online transition.
+      flushOfflineQueue();
+    }
     updateOfflineBadge();
   } catch(e) { isOnline = false; updateOfflineBadge(); }
 }, 90000);
@@ -1508,6 +1544,21 @@ let sizeModalSelected = null;
 let payMethod = 'cash';
 let activeCategory = 'Starters';
 let billCounter = 1;
+function genId() {
+  return (crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now()+'-'+Math.random().toString(36).slice(2));
+}
+let DEVICE_CODE = localStorage.getItem('crustify_device_code') || null;
+function ensureDeviceCode() {
+  if (DEVICE_CODE) return DEVICE_CODE;
+  DEVICE_CODE = (prompt('Name this till (e.g. T1, T2, Counter-A) — keeps bill numbers unique if two devices go offline at once:') || 'T1').trim().toUpperCase();
+  localStorage.setItem('crustify_device_code', DEVICE_CODE);
+  return DEVICE_CODE;
+}
+function extractBillSeq(billNo) {
+  if (!billNo) return NaN;
+  const m = String(billNo).match(/(\d+)$/);
+  return m ? parseInt(m[1]) : NaN;
+}
 let pendingWebOrders = [];
 let voidedOrderIds = new Set();
 const paidOrderIds = new Set();
@@ -1592,6 +1643,7 @@ async function doLogin() {
 currentStaffRole = staffRecord.role;
 currentStaffPermissions = staffRecord.permissions || {};
 shiftStart = new Date();
+ensureDeviceCode();
 
   await loadTodaySales();
   document.getElementById('login-screen').style.display = 'none';
@@ -1882,8 +1934,22 @@ function handleActiveTableRealtime(payload) {
     document.getElementById('view-order').classList.contains('active') &&
     currentOrder.table === tname;
 
+  // If this device already marked the table removed locally (paid/cleared —
+  // possibly while offline), don't let a late-arriving INSERT/UPDATE bring
+  // it back. Clean up the phantom row in the cloud instead.
+  if (payload.eventType !== 'DELETE' && _getRemovedTombstones().includes(tname)) {
+    console.log('🚫 Ignoring stale active_tables write for tombstoned table:', tname);
+    if (sb) {
+      sb.from('active_tables').delete()
+        .eq('branch', activeBranch).eq('table_name', tname)
+        .catch(() => {});
+    }
+    return;
+  }
+
   if (payload.eventType === 'DELETE') {
     if (!isEditingThisTable) delete tableOrders[tname];
+    _clearTombstone(tname);
   } else {
     if (!isEditingThisTable) tableOrders[tname] = payload.new.order_data;
   }
@@ -1900,12 +1966,11 @@ function handleShiftTxRealtime(payload) {
   const t = payload.new;
   if (!t || t.date !== todayKey()) return;
 
-  const alreadyHave = completedOrders.some(o => o.billNo === t.bill_no && o.time &&
-    Math.abs(new Date(o.time) - new Date(t.created_at)) < 10000);
+  const alreadyHave = completedOrders.some(o => o.id && o.id === t.id);
   if (alreadyHave) return;
 
   completedOrders.push({
-    billNo: t.bill_no, table: t.table_loc, type: t.type,
+    id: t.id, billNo: t.bill_no, table: t.table_loc, type: t.type,
     items: [], itemsText: t.items_text || '',
     total: t.total, method: t.method, time: new Date(t.created_at),
     staff: t.staff, branch: t.branch || activeBranch,
@@ -1917,8 +1982,10 @@ function handleShiftTxRealtime(payload) {
     kitchenOrderId: t.kitchen_order_id || null
   });
 
-  const n = parseInt(t.bill_no);
-  if (!isNaN(n) && n >= billCounter) billCounter = n + 1;
+  if (t.bill_no && t.bill_no.startsWith(DEVICE_CODE + '-')) {
+    const n = extractBillSeq(t.bill_no);
+    if (!isNaN(n) && n >= billCounter) billCounter = n + 1;
+  }
   document.getElementById('bar-billno').textContent = String(billCounter).padStart(3,'0');
 
   cashInHand = openingBalance
@@ -2488,8 +2555,8 @@ async function confirmAndPrintSlip() {
   if (tableOrders[currentOrder.table]) tableOrders[currentOrder.table].confirmed = true;
   pendingWebOrders = pendingWebOrders.filter(p => p.id !== currentOrder.webOrderId);
   updatePendingBadges();
-  if (sb && currentOrder.webOrderId) {
-    try { await sb.from('kitchen_orders').update({ status: 'PREPARING' }).eq('id', currentOrder.webOrderId); } catch(e) {}
+  if (currentOrder.webOrderId) {
+    await sbWrite('kitchen_orders', 'update', { status: 'PREPARING' }, { eq: [['id', currentOrder.webOrderId]] });
   }
   document.getElementById('pending-banner').classList.remove('show');
   printKitchenTicket();
@@ -2553,7 +2620,7 @@ async function backToTables() {
       }
       const food = currentOrder.items.reduce((s,i)=>s+i.price*i.qty,0);
       await sbWrite('shift_transactions', 'insert', [{
-        branch: activeBranch, date: todayKey(), bill_no: 'DISC',
+        id: genId(), branch: activeBranch, date: todayKey(), bill_no: 'DISC',
         type: currentOrder.type, table_loc: currentOrder.table || '',
         items_text: currentOrder.items.map(i=>i.qty+'x '+i.name).join(', '),
         subtotal: food, total: -food, method: 'discarded',
@@ -3179,15 +3246,14 @@ function saveTableOrder() {
     const delCharge = isDelivery ? (parseFloat(document.getElementById('delivery-charge')?.value) || 0) : 0;
     const itemsText = currentOrder.items
       .map(i => `${i.qty}x ${i.name}${i.note ? ' [' + i.note + ']' : ''}`).join('\n');
-    sb.from('kitchen_orders').update({
+    sbWrite('kitchen_orders', 'update', {
       items: itemsText,
       location: isDelivery ? (addr || currentOrder.table) : currentOrder.table,
       delivery_fee: delCharge,
       subtotal: currentOrder.items.reduce((s,i) => s + i.price * i.qty, 0),
       customer_name: document.getElementById('order-customer-name')?.value || null,
       phone: document.getElementById('order-customer-phone')?.value || null
-    }).eq('id', currentOrder.id)
-      .then(({ error }) => { if (error) console.error('saveTableOrder sync:', error); });
+    }, { eq: [['id', currentOrder.id]] });
   }
 }
 
@@ -3259,7 +3325,7 @@ async function requestItemAdjustment(idx, action, qtyDelta) {
   };
   completedOrders.push(adjLog);
   await sbWrite('shift_transactions', 'insert', [{
-    branch: activeBranch, date: todayKey(), bill_no: 'ADJ', type: currentOrder.type,
+    id: genId(), branch: activeBranch, date: todayKey(), bill_no: 'ADJ', type: currentOrder.type,
     table_loc: currentOrder.table || '', items_text: removedQty + 'x ' + item.name,
     subtotal: removedValue, total: -removedValue, method: 'item-void', staff: currentStaff,
     return_reason: reason.trim(), kitchen_order_id: currentOrder.id || null
@@ -3295,19 +3361,15 @@ async function changeTablePrompt() {
   const newLocation = newTable.replace('-', ' ');
   saveTableOrder();
   document.getElementById('order-table-name').textContent = newLocation;
-  if (currentOrder.id && sb) {
-    try {
-      await sb.from('kitchen_orders').update({ location: newLocation }).eq('id', currentOrder.id);
-      showToast('Moved to ' + newTable + ' ✅', 'success');
-    } catch(e) {
-      showToast('Moved locally — DB update failed', 'error');
-    }
+  if (currentOrder.id) {
+    await sbWrite('kitchen_orders', 'update', { location: newLocation }, { eq: [['id', currentOrder.id]] });
+    showToast('Moved to ' + newTable + (isOnline ? ' ✅' : ' — queued offline'), 'success');
   } else {
     showToast('Moved to ' + newTable, 'success');
   }
   renderTableMap();
 }
-function returnItem(idx) {
+async function returnItem(idx) {
   const item = currentOrder.items[idx];
   const adminPin = prompt('Enter Admin PIN to return this item:');
   if (adminPin !== '7530' && adminPin !== '1234') { showToast('Wrong Admin PIN — return cancelled', 'error'); return; }
@@ -3332,6 +3394,13 @@ function returnItem(idx) {
     returnReason: reason || 'No reason given'
   };
   completedOrders.push(returnLog);
+  await sbWrite('shift_transactions', 'insert', [{
+    id: genId(), branch: activeBranch, date: todayKey(), bill_no: 'RTN', type: currentOrder.type,
+    table_loc: currentOrder.table || '', items_text: item.qty + 'x ' + item.name,
+    subtotal: item.price * item.qty, total: -(item.price * item.qty),
+    method: 'return', staff: currentStaff, return_reason: reason || 'No reason given',
+    kitchen_order_id: currentOrder.id || null
+  }]);
   saveTodaySales();
   saveTableOrder();
   renderOrderItems();
@@ -3397,6 +3466,7 @@ async function voidCurrentOrder() {
   
   // Save to Supabase shift_transactions
   await sbWrite('shift_transactions', 'insert', [{
+    id: genId(),
     branch: activeBranch,
     date: todayKey(),
     bill_no: 'VOID',
@@ -3660,7 +3730,7 @@ function applySplitByAmount() {
 
 async function _assignKotNumber() {
   if (currentOrder.kotNo) return currentOrder.kotNo;
-  if (!sb || !isOnline) { currentOrder.kotNo = String(billCounter).padStart(3,'0'); return currentOrder.kotNo; }
+  if (!sb || !isOnline) { currentOrder.kotNo = DEVICE_CODE + '-' + String(billCounter).padStart(3,'0'); return currentOrder.kotNo; }
   try {
     const dayStart = new Date(); dayStart.setHours(0,0,0,0);
     const { count, error } = await sb.from('kitchen_orders')
@@ -3672,7 +3742,7 @@ async function _assignKotNumber() {
     }
     currentOrder.kotNo = String(count).padStart(3,'0');
   } catch(e) {
-    currentOrder.kotNo = String(billCounter).padStart(3,'0');
+    currentOrder.kotNo = DEVICE_CODE + '-' + String(billCounter).padStart(3,'0');
   }
   return currentOrder.kotNo;
 }
@@ -3730,7 +3800,7 @@ function printBillOnly() {
   const delCharge = getDelCharge();
   const { food, sc, grand, disc } = getOrderTotal(currentOrder.items, currentOrder.type, scOn, pct, discAmt, discType, delCharge);
   const bill = {
-    billNo: String(billCounter).padStart(3,'0'),
+    billNo: DEVICE_CODE + '-' + String(billCounter).padStart(3,'0'),
     table: currentOrder.table,
     type: currentOrder.type,
     items: [...currentOrder.items],
@@ -3808,7 +3878,7 @@ async function markTakeawayPaid() {
   const method = prompt('Payment method?\n1. Cash\n2. Card\n3. JazzCash\n4. Bank\n5. FoodPanda\n\nType number:');
   const methodMap = { '1':'cash','2':'card','3':'jazzcash','4':'bank','5':'foodpanda' };
   const payM = methodMap[method] || 'cash';
-  const tokenNo = String(billCounter).padStart(3,'0');
+  const tokenNo = DEVICE_CODE + '-' + String(billCounter).padStart(3, '0');
   const sale = {
     billNo: tokenNo,
     table: currentOrder.table, type: currentOrder.type,
@@ -3976,7 +4046,7 @@ async function completePayment() {
       if (sc < 0) sc = 0;
     }
  
-    const billNo = String(billCounter).padStart(3, '0');
+    const billNo = DEVICE_CODE + '-' + String(billCounter).padStart(3, '0');
     const riderTag = (currentOrder.type === 'Delivery' && currentOrder.rider) ? ` [Rider: ${currentOrder.rider}]` : '';
     const sale = {
       billNo, table: currentOrder.table, type: currentOrder.type,
@@ -4297,7 +4367,7 @@ const timerColor = isCompleted ? 'var(--text3)' : 'var(--red)';
       <div class="dc-actions">
         ${o.status==='WAITING'?`<button class="dc-btn blue" onclick="updateDeliveryStatus('${o.id}','PREPARING')">▶ Preparing</button>`:''}
         ${o.status==='PREPARING'?`<button class="dc-btn green" onclick="updateDeliveryStatus('${o.id}','READY')">✅ Ready</button>`:''}
-        ${o.status==='READY'?`<button class="dc-btn purple" onclick="updateDeliveryStatus('${o.id}','OUT')">🛵 Out</button>`:''}
+        ${o.status==='READY'?`<button class="dc-btn purple" onclick="updateDeliveryStatus('${o.id}','OUT',${JSON.stringify(o).replace(/"/g,'&quot;')})">🛵 Out</button>`:''}
         ${o.rider?`<button class="dc-btn gold" onclick="notifyCustomer('${o.id}','${o.phone||''}','${o.rider}')">📲 Notify</button>`:''}
         <button class="dc-btn green" onclick="printDeliverySlip(${JSON.stringify(o).replace(/"/g,'&quot;')})">🖨️ Slip</button>
         <button class="dc-btn red" onclick="deleteDelivery('${o.id}')">🗑️</button>
@@ -4310,11 +4380,11 @@ const timerColor = isCompleted ? 'var(--text3)' : 'var(--red)';
 async function assignRiderDel(orderId, rider, btn) {
   document.querySelectorAll(`#riders-${orderId} .rider-pill`).forEach(b=>b.classList.remove('active'));
   btn.classList.add('active');
-  if (sb) { try { await sb.from('kitchen_orders').update({rider}).eq('id',orderId); } catch(e){} }
+  await sbWrite('kitchen_orders', 'update', { rider }, { eq: [['id', orderId]] });
   showToast(`Assigned ${rider}`,'success');
 }
 
-async function updateDeliveryStatus(orderId, status) {
+async function updateDeliveryStatus(orderId, status, knownOrder) {
   try {
     // ✅ FIX 1: Ask payment method when marking delivered
     let paymentMethod = 'cash';
@@ -4338,15 +4408,23 @@ async function updateDeliveryStatus(orderId, status) {
 }
       renderTableMap();
 
-      // Save to report
-      if (sb) {
+      // Save to report — try a fresh fetch first, but fall back to the
+      // order data the delivery card already had if that fails (offline).
+      // This guarantees the sale is never silently dropped.
+      let ko = null;
+      if (sb && isOnline) {
         try {
-          const { data: ko } = await sb.from('kitchen_orders')
-          .select('id, subtotal, delivery_fee, location, items, customer_name, phone, discount').eq('id', orderId).single();
+          const { data } = await sb.from('kitchen_orders')
+            .select('id, subtotal, delivery_fee, location, items, customer_name, phone, discount').eq('id', orderId).single();
+          ko = data;
+        } catch(e) { console.warn('Live fetch failed, using cached order:', e.message); }
+      }
+      if (!ko) ko = knownOrder;
+      {
           if (ko) {
             const shopTotal = ko.subtotal || 0;
               const delFee = ko.delivery_fee || 0;
-              const billNo = String(billCounter).padStart(3, '0');
+              const billNo = DEVICE_CODE + '-' + String(billCounter).padStart(3, '0');
               const alreadySaved = completedOrders.find(o => o.kitchenOrderId === orderId);
               if (!alreadySaved) {
                 const sale = {
@@ -4363,7 +4441,7 @@ sc: 0, disc: ko.discount || 0, scPct: 0, discType: 'flat', discAmount: ko.discou
               };
               completedOrders.push(sale);
               await sbWrite('shift_transactions', 'insert', [{
-                branch: activeBranch, date: todayKey(),
+                id: genId(), branch: activeBranch, date: todayKey(),
                 bill_no: billNo, type: 'Delivery',
                 table_loc: ko.location || '',
                 items_text: ko.items || '',
@@ -4386,8 +4464,9 @@ sc: 0, disc: ko.discount || 0, scPct: 0, discType: 'flat', discAmount: ko.discou
               document.getElementById('bar-billno').textContent = String(billCounter).padStart(3, '0');
               saveTodaySales();
             }
+          } else {
+            showToast('⚠️ Could not get order details — check Cash Drawer manually for this delivery', 'error');
           }
-        } catch(e) { console.error('Delivery OUT save error:', e); }
       }
     }
 
@@ -4411,14 +4490,14 @@ async function deleteDelivery(orderId) {
   }
   if (snap) {
     await sbWrite('shift_transactions', 'insert', [{
-      branch: activeBranch, date: todayKey(), bill_no: 'DELDEL',
+      id: genId(), branch: activeBranch, date: todayKey(), bill_no: 'DELDEL',
       type: 'Delivery', table_loc: snap.location || '',
       items_text: snap.items || '', subtotal: snap.subtotal || 0,
       total: -(snap.subtotal||0), method: 'deleted-delivery',
       staff: currentStaff, return_reason: reason.trim(), kitchen_order_id: orderId
     }]);
   }
-  if (sb) { try { await sb.from('kitchen_orders').delete().eq('id',orderId); } catch(e){} }
+  await sbWrite('kitchen_orders', 'delete', null, { eq: [['id', orderId]] });
   showToast('Deleted — reason logged: ' + reason.trim(),'error');
   renderDeliveryView();
 }
@@ -4499,7 +4578,7 @@ async function addCashIn() {
   const reason = prompt('Reason:') || 'Cash In';
   completedOrders.push({ billNo:'CI', table:'', type:'Cash In', items:[{name:reason,price:amt,qty:1,note:''}], total:amt, method:'cash-in', time:new Date(), staff:currentStaff, branch:activeBranch, sc:0, disc:0 });
   await sbWrite('shift_transactions', 'insert', [{
-    branch: activeBranch, date: todayKey(),
+    id: genId(), branch: activeBranch, date: todayKey(),
     bill_no: 'CI', type: 'Cash In', table_loc: '',
     items_text: reason, subtotal: amt, total: amt,
     method: 'cash-in', staff: currentStaff, return_reason: reason
@@ -4538,6 +4617,7 @@ async function addExpense() {
   completedOrders.push(expenseEntry);
   
   await sbWrite('shift_transactions', 'insert', [{
+    id: genId(),
     branch: activeBranch,
     date: todayKey(),
     bill_no: 'EXP',
@@ -4564,7 +4644,7 @@ async function addCashOut() {
   const reason = prompt('Reason:') || 'Cash Out';
   completedOrders.push({ billNo:'CO', table:'', type:'Cash Out', items:[{name:reason,price:amt,qty:1,note:''}], total:-amt, method:'cash-out', time:new Date(), staff:currentStaff, branch:activeBranch, sc:0, disc:0 });
   await sbWrite('shift_transactions', 'insert', [{
-    branch: activeBranch, date: todayKey(),
+    id: genId(), branch: activeBranch, date: todayKey(),
     bill_no: 'CO', type: 'Cash Out', table_loc: '',
     items_text: reason, subtotal: amt, total: -amt,
     method: 'cash-out', staff: currentStaff, return_reason: reason
@@ -4651,7 +4731,7 @@ async function loadCashForRange(fromVal, toVal) {
       .order('created_at', { ascending: true });
     txs = data || [];
   } catch(e) { txs = []; }
-  txs = mergeInPendingTx(txs, activeBranch, fromVal + ':00+05:00', toVal + ':00+05:00');
+  txs = mergeInPendingTx(txs, activeBranch, _dtLocalToISO(fromVal), _dtLocalToISO(toVal));
   const pendingCount = txs.filter(t => t._pending).length;
   if (pendingCount) showToast(pendingCount + ' sale(s) not yet synced — included from local queue', 'error');
 
@@ -4746,7 +4826,7 @@ async function renderClosingReport() {
       .order('created_at', { ascending: true });
     txs = data || [];
   } catch(e) { txs = []; } // don't bail — offline queue may still have today's sales
-  txs = mergeInPendingTx(txs, activeBranch, fromEl.value + ':00+05:00', toEl.value + ':00+05:00');
+  txs = mergeInPendingTx(txs, activeBranch, _dtLocalToISO(fromEl.value), _dtLocalToISO(toEl.value));
   const pendingCount = txs.filter(t => t._pending).length;
   if (pendingCount) showToast(pendingCount + ' sale(s) not yet synced — included from local queue', 'error');
 
@@ -4874,7 +4954,7 @@ async function printClosingReport() {
       .order('created_at', { ascending: true });
     txs = data || [];
   } catch(e) { txs = []; }
-  txs = mergeInPendingTx(txs, activeBranch, fromVal + ':00+05:00', toVal + ':00+05:00');
+  txs = mergeInPendingTx(txs, activeBranch, _dtLocalToISO(fromVal), _dtLocalToISO(toVal));
   const pendingCount = txs.filter(t => t._pending).length;
   if (pendingCount) showToast(pendingCount + ' sale(s) not yet synced — included from local queue', 'error');
 
@@ -4936,7 +5016,7 @@ async function exportClosingExcel() {
       .order('created_at', { ascending: true });
     txs = data || [];
   } catch(e) { txs = []; }
-  txs = mergeInPendingTx(txs, activeBranch, fromVal + ':00+05:00', toVal + ':00+05:00');
+  txs = mergeInPendingTx(txs, activeBranch, _dtLocalToISO(fromVal), _dtLocalToISO(toVal));
   const pendingCount = txs.filter(t => t._pending).length;
   if (pendingCount) showToast(pendingCount + ' sale(s) not yet synced — included from local queue', 'error');
 
@@ -5073,13 +5153,13 @@ async function loadTodaySales() {
 
    // ── Load completed transactions ───────────────────────────────
     const { data: txs } = await sb.from('shift_transactions')
-      .select('bill_no, type, table_loc, items_text, total, method, created_at, staff, branch, customer_name, customer_phone, delivery_address, delivery_charge, sc, sc_pct, discount, cash_received, split_cash, split_card, return_reason, kitchen_order_id')
+      .select('id, bill_no, type, table_loc, items_text, total, method, created_at, staff, branch, customer_name, customer_phone, delivery_address, delivery_charge, sc, sc_pct, discount, cash_received, split_cash, split_card, return_reason, kitchen_order_id')
       .eq('branch', activeBranch).eq('date', todayK)
       .order('created_at', { ascending: true });
 
     if (txs && txs.length) {
       completedOrders = txs.map(t => ({
-        billNo: t.bill_no, table: t.table_loc, type: t.type,
+        id: t.id, billNo: t.bill_no, table: t.table_loc, type: t.type,
         items: [], // not fetched — use itemsText for display
         itemsText: t.items_text || '',
         total: t.total, method: t.method, time: new Date(t.created_at),
@@ -5092,8 +5172,10 @@ async function loadTodaySales() {
         kitchenOrderId: t.kitchen_order_id || null
       }));
 
-      // Restore billCounter from highest bill number in DB
-      const nums = completedOrders.map(o => parseInt(o.billNo)).filter(n => !isNaN(n) && n > 0);
+      // Restore billCounter from highest bill number THIS device issued
+      const nums = completedOrders
+        .filter(o => o.billNo && o.billNo.startsWith(DEVICE_CODE + '-'))
+        .map(o => extractBillSeq(o.billNo)).filter(n => !isNaN(n) && n > 0);
       if (nums.length) billCounter = Math.max(...nums) + 1;
     }
 
@@ -5938,7 +6020,19 @@ async function _fetchAndOpenAdminTxModal(billNo) {
       .eq('date', _adminTxDate)
       .order('created_at', { ascending: false })
       .limit(1);
-    if (!data || !data.length) { showToast('Transaction not found', 'error'); return; }
+
+    if (!data || !data.length) {
+      // Not in Supabase yet — check if it's still sitting in the local
+      // offline queue before reporting it as missing.
+      const pending = getPendingQueuedTxRows(_adminTxBranch)
+        .find(r => r.bill_no === billNo && r.date === _adminTxDate);
+      if (pending) {
+        showToast('This bill hasn\'t synced to the cloud yet — try again once "Syncing" clears', 'error');
+      } else {
+        showToast('Transaction not found', 'error');
+      }
+      return;
+    }
     const t = data[0];
     const tx = {
       billNo: t.bill_no, table: t.table_loc, type: t.type,
