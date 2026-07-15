@@ -1294,7 +1294,7 @@ async function sbWrite(table, op, payload, match) {
       (match?.eq||[]).forEach(([k,v]) => q = q.eq(k,v));
       res = await q;
     }
-    if (res.error) throw res.error;
+    if (res.error || res === undefined) throw (res && res.error) || new Error('write returned no result');
     return res;
   } catch(e) {
     console.warn('Write failed — queued offline:', table, op, e.message);
@@ -3268,7 +3268,7 @@ async function changeTablePrompt() {
   if (tableOrders[newTable] && newTable !== currentOrder.table) { showToast('That table is already occupied', 'error'); return; }
     const oldTable = currentOrder.table;
   if (oldTable) delete tableOrders[oldTable];
-  if (oldTable) _saveActiveTable(oldTable, null);
+  if (oldTable) await _saveActiveTable(oldTable, null);
   currentOrder.table = newTable;
   
   // Detect target floor and update order type + SC accordingly
@@ -3399,7 +3399,7 @@ async function voidCurrentOrder() {
   }]);
 
   if (tableToDelete) delete tableOrders[tableToDelete];
-  if (tableToDelete) _saveActiveTable(tableToDelete, null);
+  if (tableToDelete) await _saveActiveTable(tableToDelete, null);
   currentOrder = { table: null, type: 'Dine-In', items: [], id: null };
   switchView('tables');
   renderTableMap();
@@ -4316,7 +4316,7 @@ async function updateDeliveryStatus(orderId, status) {
       voidedOrderIds.add(orderId);
       for (const tname in tableOrders) {
   if (tableOrders[tname].id === orderId || tableOrders[tname].webOrderId === orderId) {
-    _saveActiveTable(tname, null); // ← add this
+    await _saveActiveTable(tname, null);
     delete tableOrders[tname];
     break;
   }
@@ -5678,7 +5678,7 @@ async function rejectCurrentWebOrder() {
   }
   if (tname) {
     delete tableOrders[tname];
-    _saveActiveTable(tname, null);
+    await _saveActiveTable(tname, null);
   }
   pendingWebOrders = pendingWebOrders.filter(p => p.id !== orderId);
   updatePendingBadges();
