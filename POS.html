@@ -504,9 +504,9 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
       <button class="anav-btn" onclick="showATab('ainventory')">🧪 Ingredients</button>
       <button class="anav-btn" onclick="showATab('aconsumption')">📦 Consumption</button>
       <div style="margin-left:auto;display:flex;align-items:center;gap:10px;">
-        <input type="datetime-local" step="60" id="a-date-from" style="background:#242830;border:1px solid rgba(255,255,255,0.07);border-radius:8px;padding:6px 10px;color:#f0f0f0;font-family:'Outfit',sans-serif;font-size:12px;outline:none;">
+        <input type="datetime-local" step="60" id="a-date-from" onchange="syncDateRangeFromInputs('a-date-from','a-date-to')" style="background:#242830;border:1px solid rgba(255,255,255,0.07);border-radius:8px;padding:6px 10px;color:#f0f0f0;font-family:'Outfit',sans-serif;font-size:12px;outline:none;">
         <span style="color:#555d70;font-size:12px;">to</span>
-        <input type="datetime-local" step="60" id="a-date-to" style="background:#242830;border:1px solid rgba(255,255,255,0.07);border-radius:8px;padding:6px 10px;color:#f0f0f0;font-family:'Outfit',sans-serif;font-size:12px;outline:none;">
+        <input type="datetime-local" step="60" id="a-date-to" onchange="syncDateRangeFromInputs('a-date-from','a-date-to')" style="background:#242830;border:1px solid rgba(255,255,255,0.07);border-radius:8px;padding:6px 10px;color:#f0f0f0;font-family:'Outfit',sans-serif;font-size:12px;outline:none;">
         <button onclick="aRefreshAll()" style="padding:6px 14px;border-radius:8px;background:#c0392b;color:white;border:none;font-family:'Outfit',sans-serif;font-size:12px;font-weight:800;cursor:pointer;">↻ Load</button>
         <button onclick="exportACSV()" style="padding:6px 12px;border-radius:8px;background:#242830;color:#9aa0b0;border:1px solid rgba(255,255,255,0.07);font-family:'Outfit',sans-serif;font-size:12px;font-weight:700;cursor:pointer;">📊 CSV</button>
         <button onclick="toggleAnalyticsPanel()" style="padding:6px 12px;border-radius:8px;background:rgba(192,57,43,0.15);border:1px solid rgba(192,57,43,0.3);color:#c0392b;font-family:'Outfit',sans-serif;font-size:12px;font-weight:800;cursor:pointer;">✕ Close</button>
@@ -840,9 +840,9 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
       </div>
       <div style="display:flex;gap:7px;flex-wrap:wrap;align-items:center;margin-bottom:18px;">
         <span style="font-size:12px;color:var(--text2);">From</span>
-        <input type="datetime-local" step="60" id="cash-date-from" style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:6px 10px;color:var(--text);font-family:'Outfit',sans-serif;font-size:13px;outline:none;">
+        <input type="datetime-local" step="60" id="cash-date-from" onchange="syncDateRangeFromInputs('cash-date-from','cash-date-to')" style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:6px 10px;color:var(--text);font-family:'Outfit',sans-serif;font-size:13px;outline:none;">
         <span style="font-size:12px;color:var(--text2);">To</span>
-        <input type="datetime-local" step="60" id="cash-date-to" style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:6px 10px;color:var(--text);font-family:'Outfit',sans-serif;font-size:13px;outline:none;">
+        <input type="datetime-local" step="60" id="cash-date-to" onchange="syncDateRangeFromInputs('cash-date-from','cash-date-to')" style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:6px 10px;color:var(--text);font-family:'Outfit',sans-serif;font-size:13px;outline:none;">
         <button class="refresh-btn" onclick="loadCashForRange(document.getElementById('cash-date-from').value, document.getElementById('cash-date-to').value)">↻ Load Range</button>
         <button class="refresh-btn" onclick="printCashDrawerReport()" style="color:var(--green);border-color:var(--green);">🖨️ Print Report</button>
       </div>
@@ -869,9 +869,9 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
         </div>
         <div style="display:flex;gap:7px;flex-wrap:wrap;align-items:center;">
   <span style="font-size:12px;color:var(--text2);">From</span>
-  <input type="datetime-local" step="60" id="closing-date-from" style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:6px 10px;color:var(--text);font-family:'Outfit',sans-serif;font-size:13px;outline:none;">
+  <input type="datetime-local" step="60" id="closing-date-from" onchange="syncDateRangeFromInputs('closing-date-from','closing-date-to')" style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:6px 10px;color:var(--text);font-family:'Outfit',sans-serif;font-size:13px;outline:none;">
   <span style="font-size:12px;color:var(--text2);">To</span>
-  <input type="datetime-local" step="60" id="closing-date-to" style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:6px 10px;color:var(--text);font-family:'Outfit',sans-serif;font-size:13px;outline:none;">
+  <input type="datetime-local" step="60" id="closing-date-to" onchange="syncDateRangeFromInputs('closing-date-from','closing-date-to')" style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:6px 10px;color:var(--text);font-family:'Outfit',sans-serif;font-size:13px;outline:none;">
   <button class="refresh-btn" onclick="renderClosingReport()">↻ Load</button>
   <button class="print-report-btn" onclick="printClosingReport()">🖨️ Print Report</button>
   <button class="print-report-btn" onclick="exportClosingExcel()" style="color:var(--green);border-color:var(--green);">📊 Export Excel</button>
@@ -892,10 +892,10 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
         <div class="section-title-bar">📅 Shift History</div>
         <div style="display:flex;gap:10px;align-items:center;">
           <span style="font-size:12px;color:var(--text2);">From</span>
-          <input type="datetime-local" step="60" id="history-date-picker" 
+          <input type="datetime-local" step="60" id="history-date-picker" onchange="syncDateRangeFromInputs('history-date-picker','history-date-to-picker')"
             style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:7px 12px;color:var(--text);font-family:'Outfit',sans-serif;font-size:14px;outline:none;">
           <span style="font-size:12px;color:var(--text2);">To</span>
-          <input type="datetime-local" step="60" id="history-date-to-picker" 
+          <input type="datetime-local" step="60" id="history-date-to-picker" onchange="syncDateRangeFromInputs('history-date-picker','history-date-to-picker')"
             style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:7px 12px;color:var(--text);font-family:'Outfit',sans-serif;font-size:14px;outline:none;">
           <input type="hidden" id="history-branch-picker" value="MULTAN">
           <button class="refresh-btn" onclick="loadHistoryForRange(document.getElementById('history-date-picker').value, document.getElementById('history-date-to-picker').value)">↻ Load</button>
@@ -1544,6 +1544,38 @@ let sizeModalSelected = null;
 let payMethod = 'cash';
 let activeCategory = 'Starters';
 let billCounter = 1;
+// ══════════════════════════════════
+// SHARED DATE RANGE (syncs Cash / Closing / History / Analytics pickers)
+// ══════════════════════════════════
+let _sharedDateRange = null; // {from, to}
+function _loadSharedDateRange() {
+  try {
+    const raw = localStorage.getItem('crustify_shared_daterange_' + activeBranch);
+    if (raw) _sharedDateRange = JSON.parse(raw);
+  } catch(e) { _sharedDateRange = null; }
+}
+function syncDateRangeFromInputs(fromId, toId) {
+  const fromEl = document.getElementById(fromId);
+  const toEl = document.getElementById(toId);
+  if (!fromEl || !toEl) return;
+  _sharedDateRange = { from: fromEl.value, to: toEl.value };
+  try {
+    localStorage.setItem('crustify_shared_daterange_' + activeBranch, JSON.stringify(_sharedDateRange));
+  } catch(e) {}
+}
+function _applySharedRangeOrDefault(fromId, toId) {
+  const fromEl = document.getElementById(fromId);
+  const toEl = document.getElementById(toId);
+  if (!fromEl || !toEl) return;
+  if (_sharedDateRange && _sharedDateRange.from && _sharedDateRange.to) {
+    fromEl.value = _sharedDateRange.from;
+    toEl.value = _sharedDateRange.to;
+  } else if (!fromEl.value || !toEl.value) {
+    const today = todayKey();
+    fromEl.value = fromEl.value || (today + 'T00:00');
+    toEl.value = toEl.value || (today + 'T23:59');
+  }
+}
 function genId() {
   return (crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now()+'-'+Math.random().toString(36).slice(2));
 }
@@ -1644,6 +1676,7 @@ currentStaffRole = staffRecord.role;
 currentStaffPermissions = staffRecord.permissions || {};
 shiftStart = new Date();
 ensureDeviceCode();
+_loadSharedDateRange();
 
   await loadTodaySales();
   document.getElementById('login-screen').style.display = 'none';
@@ -2578,22 +2611,19 @@ function switchView(v) {
   const navMap = {tables:0,delivery:1,cash:2,closing:3,history:4};
   if (navMap[v] !== undefined) document.querySelectorAll('.nav-btn')[navMap[v]]?.classList.add('active');
   if (v==='cash') {
-    const today = todayKey();
-    const fromEl = document.getElementById('cash-date-from');
-    const toEl = document.getElementById('cash-date-to');
-    if (fromEl && !fromEl.value) fromEl.value = today + 'T00:00';
-    if (toEl && !toEl.value) toEl.value = today + 'T23:59';
-    renderCashView();
+    _applySharedRangeOrDefault('cash-date-from', 'cash-date-to');
+    loadCashForRange(document.getElementById('cash-date-from').value, document.getElementById('cash-date-to').value);
   }
-  if (v==='closing') renderClosingReport();
+  if (v==='closing') {
+    _applySharedRangeOrDefault('closing-date-from', 'closing-date-to');
+    renderClosingReport();
+  }
   if (v==='tables') renderTableMap();
   if (v==='delivery') renderDeliveryView();
   if (v === 'history') {
-  const today  = todayKey();
-  document.getElementById('history-date-picker').value = today + 'T00:00';
-  document.getElementById('history-date-to-picker').value = today + 'T23:59';
+  _applySharedRangeOrDefault('history-date-picker', 'history-date-to-picker');
   document.getElementById('history-branch-picker').value = activeBranch;
-  loadHistoryForRange(today + 'T00:00', today + 'T23:59');
+  loadHistoryForRange(document.getElementById('history-date-picker').value, document.getElementById('history-date-to-picker').value);
 }
 }
 
@@ -6283,10 +6313,15 @@ function toggleAnalyticsPanel() {
   const isOpen = panel.style.display !== 'none';
   panel.style.display = isOpen ? 'none' : 'block';
   if (!isOpen) {
-    const today = todayKey() + 'T23:59';
-    const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0,10) + 'T00:00';
-    if (!document.getElementById('a-date-from').value) document.getElementById('a-date-from').value = monthStart;
-    if (!document.getElementById('a-date-to').value) document.getElementById('a-date-to').value = today;
+    if (_sharedDateRange && _sharedDateRange.from && _sharedDateRange.to) {
+      document.getElementById('a-date-from').value = _sharedDateRange.from;
+      document.getElementById('a-date-to').value = _sharedDateRange.to;
+    } else {
+      const today = todayKey() + 'T23:59';
+      const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0,10) + 'T00:00';
+      if (!document.getElementById('a-date-from').value) document.getElementById('a-date-from').value = monthStart;
+      if (!document.getElementById('a-date-to').value) document.getElementById('a-date-to').value = today;
+    }
     loadInvIngredients();
     aPopulateMenuSelector();
     aLoadAllRecipes();
