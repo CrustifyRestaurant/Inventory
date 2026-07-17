@@ -830,6 +830,19 @@ tr:hover td{background:#fafafa;}
           <input class="form-input" type="text" id="quick-closing-by" placeholder="Your name">
         </div>
       </div>
+      <div class="form-row" style="margin-bottom:14px;">
+        <div class="form-group" style="margin:0;">
+          <label class="form-label">Shift Start</label>
+          <input class="form-input" type="datetime-local" id="quick-closing-window-start">
+        </div>
+        <div class="form-group" style="margin:0;">
+          <label class="form-label">Shift End / Closing Cutoff</label>
+          <input class="form-input" type="datetime-local" id="quick-closing-cutoff">
+        </div>
+      </div>
+      <div style="font-size:11px;color:var(--mid);margin-bottom:10px;">
+        POS sales between Shift Start and Shift End are matched — even past midnight, and even if a day was skipped.
+      </div>
       <div class="drop-zone" onclick="document.getElementById('quick-closing-file').click()">
         <i class="fas fa-file-upload"></i>
         <strong>Click to upload Closing Excel</strong>
@@ -885,11 +898,11 @@ tr:hover td{background:#fafafa;}
     <div class="filters">
       <div>
         <label style="font-size:11px;font-weight:700;color:var(--mid);display:block;margin-bottom:4px;">FROM</label>
-        <input class="form-input" type="date" id="cons-from" onchange="renderConsumption()" style="max-width:160px;">
+        <input class="form-input" type="datetime-local" id="cons-from" onchange="renderConsumption()" style="max-width:200px;">
       </div>
       <div>
         <label style="font-size:11px;font-weight:700;color:var(--mid);display:block;margin-bottom:4px;">TO</label>
-        <input class="form-input" type="date" id="cons-to" onchange="renderConsumption()" style="max-width:160px;">
+        <input class="form-input" type="datetime-local" id="cons-to" onchange="renderConsumption()" style="max-width:200px;">
       </div>
       <div style="display:flex;gap:6px;align-items:flex-end;">
         <button class="btn btn-outline btn-sm" onclick="setConsRange(7)">Last 7 days</button>
@@ -1229,6 +1242,19 @@ tr:hover td{background:#fafafa;}
           <label class="form-label">Closed By *</label>
           <input class="form-input" type="text" id="cl-by" placeholder="Your name">
         </div>
+      </div>
+      <div class="form-row" style="margin-bottom:14px;">
+        <div class="form-group" style="margin:0;">
+          <label class="form-label">Shift Start — when operations began *</label>
+          <input class="form-input" type="datetime-local" id="cl-window-start">
+        </div>
+        <div class="form-group" style="margin:0;">
+          <label class="form-label">Shift End / Closing Cutoff — exact date &amp; time *</label>
+          <input class="form-input" type="datetime-local" id="cl-cutoff">
+        </div>
+      </div>
+      <div style="font-size:11px;color:var(--mid);margin-bottom:10px;">
+        POS sales between Shift Start and Shift End are matched exactly — covers overnight operations and skipped days correctly.
       </div>
       <p style="font-size:12px;color:var(--mid);margin-bottom:10px;">
         Leave physical count blank = assume no consumption (available = closing stock).
@@ -3012,6 +3038,28 @@ async function getPOSConsumedForIng(ingId, bizday) {
   return (data||[]).reduce((s,r)=>s+safe(r.qty),0);
 }
 
+// ── TIME-WINDOW BASED POS MATCHING (fixes midnight-boundary gap) ──
+function _dtLocalToISOInv(val) {
+  if (!val) return null;
+  return new Date(val + ':00+05:00').toISOString();
+}
+
+function getPrevCutoffISO() {
+  const withCutoff = DB.closing.filter(c => c.cutoff_at);
+  if (!withCutoff.length) return '2000-01-01T00:00:00Z';
+  const sorted = [...withCutoff].sort((a,b) => new Date(b.cutoff_at) - new Date(a.cutoff_at));
+  return sorted[0].cutoff_at;
+}
+
+async function getPOSConsumedForIngRange(ingId, fromISO, toISO) {
+  const { data } = await sb.from('pos_consumption')
+    .select('qty')
+    .eq('ingredient_id', ingId)
+    .gte('created_at', fromISO)
+    .lt('created_at', toISO);
+  return (data||[]).reduce((s,r)=>s+safe(r.qty),0);
+}
+
 function getOpeningForIng(ing, bizday, maxLookbackDays = 60) {
   // Search backward for the most recent closing BEFORE bizday, not just yesterday.
   // Handles skipped nights (staff off, restaurant closed, etc.) gracefully.
@@ -3034,6 +3082,14 @@ function openManualClosing() {
   document.getElementById('cl-date').value = today;
   document.getElementById('cl-by').value   = '';
   document.getElementById('cl-search').value = '';
+  document.getElementById('cl-cutoff').value = new Date(Date.now() + 5*60*60*1000).toISOString().slice(0,16);
+  // Prefill Shift Start with the previous closing's cutoff — continues where
+  // the last window left off. Fully editable: if a day got skipped, just
+  // change this to when THAT day's operations actually began.
+  const prevCutoff = getPrevCutoffISO();
+  document.getElementById('cl-window-start').value = (prevCutoff && prevCutoff !== '2000-01-01T00:00:00Z')
+    ? new Date(new Date(prevCutoff).getTime() + 5*60*60*1000).toISOString().slice(0,16)
+    : today + 'T09:00';
   generateClosingTable(today);
   openM('m-closing');
 }
@@ -3072,8 +3128,13 @@ function filterClosingTable() {
 async function saveManualClosing() {
   const bizday   = document.getElementById('cl-date').value;
   const closedby = document.getElementById('cl-by').value.trim();
+  const cutoffISO = _dtLocalToISOInv(document.getElementById('cl-cutoff').value);
+  const windowStartISO = _dtLocalToISOInv(document.getElementById('cl-window-start').value);
   if (!bizday)   { toast('Business day required','err'); return; }
   if (!closedby) { toast('Closed by required','err'); return; }
+  if (!cutoffISO){ toast('Shift End / cutoff time required','err'); return; }
+  if (!windowStartISO) { toast('Shift Start time required','err'); return; }
+  if (new Date(windowStartISO) >= new Date(cutoffISO)) { toast('Shift Start must be before Shift End','err'); return; }
 
   if (DB.closing.some(c=>c.bizday===bizday)) {
     if (!confirm(`Closing for ${fmtDate(bizday)} already exists. Overwrite?`)) return;
@@ -3089,14 +3150,9 @@ async function saveManualClosing() {
 
   const activeIngs = DB.ingredients.filter(i => i.is_active !== false);
   const posMap = {};
-  
+
   await Promise.all(activeIngs.map(async ing => {
-    try {
-      const { data } = await sb.from('pos_consumption').select('qty').eq('ingredient_id', ing.id).eq('bizday', bizday);
-      posMap[ing.id] = (data || []).reduce((s, r) => s + safe(r.qty), 0);
-    } catch (e) {
-      posMap[ing.id] = 0;
-    }
+    posMap[ing.id] = await getPOSConsumedForIngRange(ing.id, windowStartISO, cutoffISO);
   }));
 
   for (const ing of activeIngs) {
@@ -3126,7 +3182,9 @@ async function saveManualClosing() {
   setSyncStatus('busy','Saving closing…');
 
   const { error: hErr } = await sb.from('closing').insert({
-    id: closingId, bizday, closedby, totalcost: totalCost, createdat: new Date().toISOString()
+    id: closingId, bizday, closedby, totalcost: totalCost,
+    cutoff_at: cutoffISO, window_start_at: windowStartISO,
+    createdat: new Date().toISOString()
   });
   if (hErr) { toast('❌ '+hErr.message,'err'); return; }
 
@@ -3161,7 +3219,7 @@ async function saveManualClosing() {
     return;
   }
 
-  DB.closing.unshift({ id: closingId, bizday, closedby, totalcost: totalCost });
+  DB.closing.unshift({ id: closingId, bizday, closedby, totalcost: totalCost, cutoff_at: cutoffISO, window_start_at: windowStartISO });
   DB.closingItems.push(...items);
 
   closeM('m-closing');
@@ -3226,6 +3284,11 @@ async function handleClosingUpload(e) {
 async function commitUploadClosing() {
   if (!_pendingClosing) return;
   const { bizday, closedby, counts } = _pendingClosing;
+  const cutoffISO = _dtLocalToISOInv(document.getElementById('quick-closing-cutoff').value);
+  const windowStartISO = _dtLocalToISOInv(document.getElementById('quick-closing-window-start').value);
+  if (!cutoffISO) { toast('Set Shift End / cutoff time first','err'); return; }
+  if (!windowStartISO) { toast('Set Shift Start time first','err'); return; }
+  if (new Date(windowStartISO) >= new Date(cutoffISO)) { toast('Shift Start must be before Shift End','err'); return; }
   if (DB.closing.some(c=>c.bizday===bizday)) {
     if (!confirm(`Closing for ${fmtDate(bizday)} already exists. Overwrite?`)) return;
     const old = DB.closing.find(c=>c.bizday===bizday);
@@ -3256,12 +3319,14 @@ async function commitUploadClosing() {
       itemname: ing.name, unit: ing.unit,
       opening, grntoday: grnToday, available, physical,
       consumed, variance, costperunit: cpu, consumptioncost: cost,
-      posconsumed: await getPOSConsumedForIng(ing.id, bizday)
+      posconsumed: await getPOSConsumedForIngRange(ing.id, windowStartISO, cutoffISO)
     });
   }
   setSyncStatus('busy','Saving closing…');
   const { error: hErr } = await sb.from('closing').insert({
-    id: closingId, bizday, closedby, totalcost: totalCost, createdat: new Date().toISOString()
+    id: closingId, bizday, closedby, totalcost: totalCost,
+    cutoff_at: cutoffISO, window_start_at: windowStartISO,
+    createdat: new Date().toISOString()
   });
   if (hErr) { toast('❌ '+hErr.message,'err'); return; }
   for (let i=0;i<items.length;i+=100) {
@@ -3280,7 +3345,7 @@ async function commitUploadClosing() {
       }).eq('id', ing.id);
     }
   }
-  DB.closing.unshift({ id:closingId, bizday, closedby, totalcost:totalCost });
+  DB.closing.unshift({ id:closingId, bizday, closedby, totalcost:totalCost, cutoff_at: cutoffISO, window_start_at: windowStartISO });
   DB.closingItems.push(...items);
   _pendingClosing = null;
   document.getElementById('closing-upload-body').style.display = 'none';
@@ -3308,6 +3373,11 @@ function renderClosingReport() {
   }
   const items = DB.closingItems.filter(i => i.closing_id === closing.id);
 
+  const windowLabel = (closing.window_start_at && closing.cutoff_at)
+    ? new Date(new Date(closing.window_start_at).getTime()+5*3600000).toISOString().slice(0,16).replace('T',' ')
+      + '  →  ' + new Date(new Date(closing.cutoff_at).getTime()+5*3600000).toISOString().slice(0,16).replace('T',' ')
+    : null;
+
   div.innerHTML = `
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:16px;">
       <div class="stat ok"><div class="stat-label">Business Day</div><div class="stat-val" style="font-size:16px;">${fmtDate(closing.bizday)}</div></div>
@@ -3317,6 +3387,7 @@ function renderClosingReport() {
         <div class="stat-label">Total Consumption Cost</div>
         <div class="stat-val" id="closing-report-total-val" style="font-size:18px;">${fmtCurrency(closing.totalcost)}</div>
       </div>
+      ${windowLabel ? `<div class="stat brand" style="grid-column:1/-1;"><div class="stat-label">POS Match Window (Shift Start → Shift End)</div><div class="stat-val" style="font-size:14px;">${windowLabel}</div></div>` : ''}
     </div>
 
     <div style="display:flex;justify-content:flex-end;margin-bottom:12px;gap:8px;flex-wrap:wrap;" id="closing-report-actions">
@@ -4061,14 +4132,13 @@ async function commitIngredientsUpload() {
 let _consView = 'item';
 
 function setConsRange(days) {
-  const to = new Date();
-  document.getElementById('cons-to').value = to.toISOString().slice(0,10);
+  const nowPK = new Date(Date.now() + 5*60*60*1000);
+  document.getElementById('cons-to').value = nowPK.toISOString().slice(0,16);
   if (days === 0) {
     document.getElementById('cons-from').value = '';
   } else {
-    const from = new Date();
-    from.setDate(from.getDate() - days);
-    document.getElementById('cons-from').value = from.toISOString().slice(0,10);
+    const fromPK = new Date(Date.now() + 5*60*60*1000 - days*86400000);
+    document.getElementById('cons-from').value = fromPK.toISOString().slice(0,16);
   }
   renderConsumption();
 }
@@ -4087,11 +4157,15 @@ function switchConsView(view) {
 }
 
 function getFilteredClosings() {
-  const from = document.getElementById('cons-from')?.value || '';
-  const to   = document.getElementById('cons-to')?.value   || '';
+  const fromVal = document.getElementById('cons-from')?.value || '';
+  const toVal   = document.getElementById('cons-to')?.value   || '';
+  // cutoff_at based filtering for closings saved after the timestamp upgrade;
+  // falls back to bizday string compare for older closings without cutoff_at.
+  const fromISO = fromVal ? _dtLocalToISOInv(fromVal) : null;
+  const toISO   = toVal   ? _dtLocalToISOInv(toVal)   : null;
   let closings = [...DB.closing];
-  if (from) closings = closings.filter(c => c.bizday >= from);
-  if (to)   closings = closings.filter(c => c.bizday <= to);
+  if (fromISO) closings = closings.filter(c => c.cutoff_at ? new Date(c.cutoff_at) >= new Date(fromISO) : c.bizday >= fromVal.slice(0,10));
+  if (toISO)   closings = closings.filter(c => c.cutoff_at ? new Date(c.cutoff_at) <= new Date(toISO)   : c.bizday <= toVal.slice(0,10));
   return closings.sort((a,b) => b.bizday.localeCompare(a.bizday));
 }
 
@@ -4388,6 +4462,9 @@ window.addEventListener('DOMContentLoaded', () => {
   applyRolePermissions();
   const setIfEmpty = id => { const el=document.getElementById(id); if(el&&!el.value) el.value=today; };
   ['quick-grn-date','quick-closing-date','cl-filter-date'].forEach(setIfEmpty);
+  const nowPKDT = new Date(Date.now() + 5*60*60*1000).toISOString().slice(0,16);
+  const el2 = document.getElementById('quick-closing-cutoff');
+  if (el2 && !el2.value) el2.value = nowPKDT;
   const consFrom = new Date(); consFrom.setDate(consFrom.getDate()-30);
   document.getElementById('cons-from').value = consFrom.toISOString().slice(0,10);
   document.getElementById('cons-to').value   = today;
