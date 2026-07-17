@@ -2375,6 +2375,74 @@ async function _loadActiveTables() {
     if (restored) console.log('✅ Restored', restored, 'active tables from cloud');
   } catch(e) { console.warn('_loadActiveTables:', e.message); }
 }
+
+// Rebuilds any table missing from active_tables using kitchen_orders as the
+// durable source of truth — kitchen_orders inserts are awaited, so anything
+// that made it to "Sent to Kitchen" survives a crash/power-cut even if the
+// active_tables cursor or localStorage was lost.
+async function _recoverOrdersFromKitchen() {
+  if (!sb) return;
+  try {
+    const { data: openKOs } = await sb.from('kitchen_orders')
+      .select('id, type, location, items, subtotal, delivery_fee, customer_name, phone, created_at')
+      .eq('branch', activeBranch)
+      .in('status', ['WAITING', 'PREPARING', 'READY']);
+    if (!openKOs || !openKOs.length) return;
+
+    // Exclude ones already paid/settled (recorded in shift_transactions today)
+    const { data: paidTx } = await sb.from('shift_transactions')
+      .select('kitchen_order_id').eq('branch', activeBranch).eq('date', todayKey());
+    const paidIds = new Set((paidTx || []).map(t => t.kitchen_order_id).filter(Boolean));
+
+    let recovered = 0;
+    for (const ko of openKOs) {
+      if (paidIds.has(ko.id)) continue;
+
+      // Already present in tableOrders (by kitchen_order id)? skip.
+      const already = Object.values(tableOrders).some(o => o.id === ko.id);
+      if (already) continue;
+
+      const isDelivery = ko.type === 'Delivery';
+      let tname = ko.location;
+      if (!isDelivery) {
+        // location is stored as "T 1" style — convert back to "T-1" table id
+        const candidate = ALL_TABLE_IDS.find(t => t.replace('-', ' ') === tname || t === tname);
+        tname = candidate || tname;
+      } else {
+        // find a free DEL- slot for this recovered delivery order
+        const freeDel = TABLES['Delivery'].find(t => !tableOrders[t]);
+        tname = freeDel || ('DEL-' + ko.id.slice(0,4));
+      }
+      if (tableOrders[tname]) continue; // slot already occupied by something else
+
+      const items = parseItemsFromText(ko.items, ko.subtotal, !isDelivery && ko.type === 'Dine-In');
+      tableOrders[tname] = {
+        table: tname,
+        type: ko.type,
+        items,
+        id: ko.id,
+        startTime: new Date(ko.created_at).getTime(),
+        sentToKitchen: true,
+        customerName: ko.customer_name || '',
+        customerPhone: ko.phone || '',
+        deliveryAddress: isDelivery ? (ko.location || '') : '',
+        deliveryCharge: ko.delivery_fee || 0,
+        fromWeb: false, confirmed: true
+      };
+      _clearTombstone(tname);
+      _saveActiveTable(tname, tableOrders[tname]); // re-sync active_tables cursor
+      recovered++;
+    }
+
+    if (recovered) {
+      persistLocalTables();
+      showToast('♻️ Recovered ' + recovered + ' open order(s) after restart', 'success');
+      renderTableMap();
+    }
+  } catch(e) {
+    console.warn('_recoverOrdersFromKitchen failed:', e.message);
+  }
+}
 // ================================================================================
 
 function showTableConflictModal(newOrderTableId, newOrder, existingOrder) {
@@ -3906,6 +3974,7 @@ async function markTakeawayPaid() {
   const { grand, disc } = getOrderTotal(currentOrder.items, currentOrder.type, false, 0, discAmt, discType, 0);
   // Ask payment method
   const method = prompt('Payment method?\n1. Cash\n2. Card\n3. JazzCash\n4. Bank\n5. FoodPanda\n\nType number:');
+  if (method === null) { showToast('Payment cancelled — order kept open', 'error'); return; }
   const methodMap = { '1':'cash','2':'card','3':'jazzcash','4':'bank','5':'foodpanda' };
   const payM = methodMap[method] || 'cash';
   const tokenNo = DEVICE_CODE + '-' + String(billCounter).padStart(3, '0');
@@ -4420,6 +4489,7 @@ async function updateDeliveryStatus(orderId, status, knownOrder) {
     let paymentMethod = 'cash';
     if (status === 'OUT') {
       const mc = prompt('How did customer pay?\n1. Cash\n2. JazzCash\n3. Card\n4. FoodPanda\n5. Bank Transfer\n\nEnter number (Enter = Cash):');
+      if (mc === null) { showToast('Cancelled — order not marked delivered', 'error'); return; }
       const mm = { '1':'cash','2':'jazzcash','3':'card','4':'foodpanda','5':'bank' };
       paymentMethod = mm[(mc||'').trim()] || 'cash';
     }
@@ -5241,6 +5311,7 @@ async function loadTodaySales() {
 
     // ── Restore open tables (survives refresh) ────────────────────
     await _loadActiveTables();
+    await _recoverOrdersFromKitchen();
 
     console.log('✅ Restored from cloud: bills=' + completedOrders.length +
       ' tables=' + Object.keys(tableOrders).length +
