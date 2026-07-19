@@ -751,7 +751,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
         <!-- SC ROW -->
         <div id="sc-row" style="display:flex;align-items:center;gap:7px;margin-bottom:5px;">
           <span style="font-size:13px;color:var(--text2);font-weight:600;white-space:nowrap;">Service Charge:</span>
-          <button class="sc-chk on" id="sc-toggle-btn" onclick="toggleSC()"></button>
+          <button class="sc-chk" id="sc-toggle-btn" onclick="toggleSC()"></button>
           <input class="sc-pct-input" type="number" id="sc-pct" value="7" min="0" max="30" oninput="renderOrderTotals()">
           <span style="font-size:12px;color:var(--text3);">%</span>
           <span style="margin-left:auto;font-size:13px;color:var(--text3);" id="sc-amount-preview"></span>
@@ -2952,6 +2952,10 @@ const food = order ? (order.subtotal || getOrderTotal(order.items, order.type, f
       const riderLabel = (order && order.type === 'Delivery' && order.rider)
         ? `<div style="font-size:9px;color:var(--gold);margin-top:1px;font-weight:700;">🏍️ ${order.rider}</div>`
         : '';
+      const isAdminView = currentStaffRole === 'Admin' || currentStaffRole === 'Manager';
+      const staffLabel = (order && order.staff && isAdminView)
+        ? `<div style="font-size:9px;color:#5dade2;margin-top:1px;font-weight:700;">👤 ${order.staff}</div>`
+        : '';
       const itemsSummary = (order && order.items && order.items.length)
         ? `<div style="font-size:9px;color:var(--text2);margin-top:1px;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${order.items.slice(0,2).map(i=>i.qty+'x '+i.name.split(' ')[0]).join(', ')}${order.items.length>2?'…':''}</div>`
         : '';
@@ -2960,6 +2964,7 @@ const food = order ? (order.subtotal || getOrderTotal(order.items, order.type, f
         <div class="table-icon">${icon}</div>
         <div class="table-name">${tname.replace('-',' ')}</div>
         ${delLabel}
+        ${staffLabel}
         ${riderLabel}
         ${itemsSummary}
         <div class="table-timer" id="timer-${tname}">${timer}</div>
@@ -3017,7 +3022,7 @@ async function openTable(tname, floor) {
       } catch(e) { console.warn('Could not load order items:', e); }
     }
   } else {
-    currentOrder = { table:tname, type:orderType, items:[], startTime:Date.now(), id:null, scEnabled:false, scPct:7, fromWeb:false, confirmed:false, webOrderId:null, sentToKitchen:false };
+    currentOrder = { table:tname, type:orderType, items:[], startTime:Date.now(), id:null, scEnabled:false, scPct:7, fromWeb:false, confirmed:false, webOrderId:null, sentToKitchen:false, staff: currentStaff };
   }
   scEnabled = currentOrder.scEnabled !== undefined ? currentOrder.scEnabled : (orderType==='Dine-In');
   scPercent = currentOrder.scPct || 7;
@@ -3082,17 +3087,10 @@ function openOrderView(tname, type) {
   scRow.style.display = type==='Dine-In' ? 'flex' : 'none';
   // For web orders, SC is already baked into subtotal — disable SC toggle
   // REPLACE WITH:
-if (currentOrder.fromWeb) {
-    scEnabled = true;  // SC ON for web dine-in orders
-    document.getElementById('sc-toggle-btn').disabled = false;
-    document.getElementById('sc-toggle-btn').style.opacity = '1';
-    document.getElementById('sc-toggle-btn').style.cursor = 'pointer';
-  } else {
-    scEnabled = type==='Dine-In' ? (currentOrder.scEnabled !== undefined ? currentOrder.scEnabled : false) : false;
-    document.getElementById('sc-toggle-btn').disabled = false;
-    document.getElementById('sc-toggle-btn').style.opacity = '1';
-    document.getElementById('sc-toggle-btn').style.cursor = 'pointer';
-  }
+scEnabled = type==='Dine-In' ? (currentOrder.scEnabled !== undefined ? currentOrder.scEnabled : false) : false;
+  document.getElementById('sc-toggle-btn').disabled = false;
+  document.getElementById('sc-toggle-btn').style.opacity = '1';
+  document.getElementById('sc-toggle-btn').style.cursor = 'pointer';
   syncSCUI();
 
   // Delivery fields: only Delivery
@@ -3465,6 +3463,7 @@ function saveTableOrder() {
     return;
   }
  
+  currentOrder.staff      = currentOrder.staff || currentStaff;
   currentOrder.scEnabled  = scEnabled;
   currentOrder.scPct      = getSCPct();
   currentOrder.discAmount = parseFloat(document.getElementById('disc-amount').value) || 0;
