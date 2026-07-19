@@ -675,8 +675,6 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
         </div>
         <div style="display:flex;gap:7px;align-items:center;">
           <button class="refresh-btn" onclick="fullRefresh()">↻ Refresh</button>
-          <button class="nav-btn" style="background:var(--red);color:white;" onclick="openNewOrder(null,'Delivery')">+ Delivery</button>
-          <button class="nav-btn" style="background:var(--surface2);color:var(--text2);" onclick="openNewOrder(null,'Takeaway')">+ Takeaway</button>
         </div>
       </div>
       <div class="table-grid-wrap" id="table-grid-wrap"></div>
@@ -812,7 +810,6 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
         <div style="display:flex;gap:7px;align-items:center;">
           <button class="refresh-btn" onclick="renderDeliveryView()">↻ Refresh</button>
           <button class="refresh-btn" onclick="exportDeliveryExcel()" style="color:var(--green);border-color:var(--green);">📊 Export Excel</button>
-          <button class="action-btn-sm" style="background:var(--red);color:white;" onclick="openNewOrder(null,'Delivery')">+ New Delivery</button>
         </div>
       </div>
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:18px;">
@@ -1215,7 +1212,12 @@ function getQueue() {
   catch(e) { return []; }
 }
 function saveQueue(q) {
-  localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(q));
+  try {
+    localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(q));
+  } catch(e) {
+    console.error('OFFLINE QUEUE STORAGE FULL — a sale may not be saved!', e);
+    showToast('⚠️ Device storage full — this may NOT be saved offline! Reconnect immediately.', 'error');
+  }
   updateOfflineBadge();
 }
 function queueOfflineAction(table, op, payload, match) {
@@ -1256,19 +1258,21 @@ function loadLocalTables() {
 function _markTableRemoved(tname) {
   try {
     const key = 'crustify_removed_' + activeBranch;
-    const set = JSON.parse(localStorage.getItem(key) || '[]');
-    if (!set.includes(tname)) { set.push(tname); localStorage.setItem(key, JSON.stringify(set)); }
+    const map = JSON.parse(localStorage.getItem(key) || '{}');
+    map[tname] = Date.now(); // remember WHEN we cleared it, not just that we did
+    localStorage.setItem(key, JSON.stringify(map));
   } catch(e) {}
 }
 function _clearTombstone(tname) {
   try {
-    const set = JSON.parse(localStorage.getItem('crustify_removed_' + activeBranch) || '[]').filter(t => t !== tname);
-    localStorage.setItem('crustify_removed_' + activeBranch, JSON.stringify(set));
+    const map = JSON.parse(localStorage.getItem('crustify_removed_' + activeBranch) || '{}');
+    delete map[tname];
+    localStorage.setItem('crustify_removed_' + activeBranch, JSON.stringify(map));
   } catch(e) {}
 }
 function _getRemovedTombstones() {
-  try { return JSON.parse(localStorage.getItem('crustify_removed_' + activeBranch) || '[]'); }
-  catch(e) { return []; }
+  try { return JSON.parse(localStorage.getItem('crustify_removed_' + activeBranch) || '{}'); }
+  catch(e) { return {}; }
 }
 function persistLocalCompleted() {
   try {
@@ -1544,6 +1548,39 @@ let sizeModalSelected = null;
 let payMethod = 'cash';
 let activeCategory = 'Starters';
 let billCounter = 1;
+
+// ══════════════════════════════════
+// CANONICAL CASH-IN-HAND CALCULATOR — the ONLY place this math is done.
+// Every screen (Cash tab, Closing, History, realtime sync, admin edits)
+// calls this instead of re-deriving its own formula — that mismatch was
+// why drawer totals disagreed with each other and expenses/cash-in kept
+// silently dropping out after a refresh.
+// ══════════════════════════════════
+function _deliveryFeeHeldByRider(o) {
+  // Fee only leaves the drawer if the delivery was closed via the kanban
+  // "Out" button (updateDeliveryStatus) — that's the only path that ever
+  // creates a kitchen_orders row for a Delivery order, so kitchen_order_id
+  // is the reliable signal for "rider collected this fee, not us."
+  if (o.type !== 'Delivery') return 0;
+  const hasKitchenOrder = o.kitchenOrderId || o.kitchen_order_id;
+  return hasKitchenOrder ? (o.deliveryCharge || o.delivery_charge || 0) : 0;
+}
+function sumDeliveryFeesHeldByRider(orders) {
+  return (orders || []).reduce((s,o) => s + _deliveryFeeHeldByRider(o), 0);
+}
+function computeCashInHand(orders, opening) {
+  let cash = opening || 0;
+  (orders || []).forEach(o => {
+    if (o.method === 'cash')          cash += o.total;
+    else if (o.method === 'cash-in')  cash += o.total;
+    else if (o.method === 'split')    cash += (o.splitCash || o.split_cash || 0);
+    else if (o.method === 'cash-out') cash -= Math.abs(o.total);
+    else if (o.method === 'expense')  cash -= Math.abs(o.total);
+    cash -= _deliveryFeeHeldByRider(o);
+  });
+  return Math.round(cash);
+}
+let _takeawayPaymentInProgress = false;
 // ══════════════════════════════════
 // SHARED DATE RANGE (syncs Cash / Closing / History / Analytics pickers)
 // ══════════════════════════════════
@@ -1582,7 +1619,9 @@ function genId() {
 let DEVICE_CODE = localStorage.getItem('crustify_device_code') || null;
 function ensureDeviceCode() {
   if (DEVICE_CODE) return DEVICE_CODE;
-  DEVICE_CODE = (prompt('Name this till (e.g. T1, T2, Counter-A) — keeps bill numbers unique if two devices go offline at once:') || 'T1').trim().toUpperCase();
+  const label = (prompt('Name this till (e.g. T1, T2, Counter-A):') || 'T1').trim().toUpperCase().replace(/[^A-Z0-9]/g,'');
+  const suffix = Math.random().toString(36).slice(2,5).toUpperCase(); // near-unique, avoids two tills colliding
+  DEVICE_CODE = label + suffix;
   localStorage.setItem('crustify_device_code', DEVICE_CODE);
   return DEVICE_CODE;
 }
@@ -1752,11 +1791,37 @@ async function saveShiftReport() {
 
 async function doLogout() {
   if (!confirm('Logout? Shift data stays intact — use "Close Shifts" to end the day.')) return;
+
+  // Force-flush whatever is on screen right now — covers any field that
+  // doesn't have its own save handler — and AWAIT the cloud write so
+  // reload() can't cut it off mid-flight.
+  if (currentOrder && currentOrder.table) {
+    saveTableOrder();
+    try {
+      await _saveActiveTable(currentOrder.table, tableOrders[currentOrder.table] || null);
+    } catch(e) { console.warn('Final save before logout failed — queued offline:', e); }
+  }
+
   if (liveReloadInterval) clearInterval(liveReloadInterval);
   if (timerInterval) clearInterval(timerInterval);
   if (tableTimerInterval) clearInterval(tableTimerInterval);
 
   await saveShiftReport();
+
+  // Give queued offline writes a few seconds to sync before reloading —
+  // a device that never syncs means a DIFFERENT till won't see this
+  // till's edits until it comes back online.
+  if (isOnline) {
+    const start = Date.now();
+    while (getQueue().length > 0 && Date.now() - start < 4000) {
+      await flushOfflineQueue();
+      await new Promise(r => setTimeout(r, 400));
+    }
+  }
+  const stillPending = getQueue().length;
+  if (stillPending > 0) {
+    showToast('⚠️ ' + stillPending + ' change(s) not yet synced — saved on THIS device, will sync automatically once online.', 'error');
+  }
 
   const perms = currentStaffPermissions || {};
   const canPrintLogout = currentStaffRole === 'Admin' || currentStaffRole === 'Manager' || perms.print_logout !== false;
@@ -1764,9 +1829,9 @@ async function doLogout() {
   if (shouldPrint) {
     await renderClosingReport();
     printClosingReport();
-    setTimeout(() => location.reload(), 2500);
+    setTimeout(() => location.reload(), stillPending > 0 ? 4500 : 2500);
   } else {
-    location.reload();
+    setTimeout(() => location.reload(), stillPending > 0 ? 2000 : 0);
   }
   // ✅ No localStorage.clear() — data stays, next login restores everything from Supabase
 }
@@ -1781,6 +1846,56 @@ function todayKey() {
 function _dtLocalToISO(val) {
   if (!val) return null;
   return new Date(val + ':00+05:00').toISOString(); // datetime-local has no TZ — treat as Pakistan time
+}
+function promptPaymentMethod(title) {
+  const methodMap = { '1':'cash','2':'jazzcash','3':'card','4':'foodpanda','5':'bank' };
+  while (true) {
+    const mc = prompt(title + '\n1. Cash\n2. JazzCash\n3. Card\n4. FoodPanda\n5. Bank Transfer\n\nEnter number (1-5):');
+    if (mc === null) return null; // cancelled
+    const trimmed = (mc || '').trim();
+    if (methodMap[trimmed]) return methodMap[trimmed];
+    alert('Invalid entry — please type a number from 1 to 5. Nothing was recorded.');
+  }
+}
+function _obCacheKey(branch) { return 'crustify_openingbal_cache_' + branch; }
+function _loadObCache(branch) {
+  try { return JSON.parse(localStorage.getItem(_obCacheKey(branch)) || '{}'); } catch(e) { return {}; }
+}
+function _saveObCache(branch, dateStr, amount) {
+  try {
+    const c = _loadObCache(branch);
+    c[dateStr] = amount;
+    localStorage.setItem(_obCacheKey(branch), JSON.stringify(c));
+  } catch(e) {}
+}
+async function fetchOpeningBalance(branch, dateStr) {
+  // Today, this branch: the live in-memory value is always freshest —
+  // never fall back to a stale/zero cloud read for today.
+  if (branch === activeBranch && dateStr === todayKey()) {
+    _saveObCache(branch, dateStr, openingBalance);
+    return { amount: openingBalance, ok: true };
+  }
+  if (!isOnline) {
+    const cache = _loadObCache(branch);
+    if (dateStr in cache) return { amount: cache[dateStr], ok: true, cached: true };
+    return { amount: 0, ok: false };
+  }
+  try {
+    const { data, error } = await sb.from('opening_balance').select('amount')
+      .eq('branch', branch).eq('date', dateStr).maybeSingle();
+    if (error) {
+      const cache = _loadObCache(branch);
+      if (dateStr in cache) return { amount: cache[dateStr], ok: true, cached: true };
+      return { amount: 0, ok: false };
+    }
+    const amt = data ? (data.amount || 0) : 0;
+    _saveObCache(branch, dateStr, amt);
+    return { amount: amt, ok: true };
+  } catch(e) {
+    const cache = _loadObCache(branch);
+    if (dateStr in cache) return { amount: cache[dateStr], ok: true, cached: true };
+    return { amount: 0, ok: false };
+  }
 }
 function convertQtyToUnit(qty, fromUnit, toUnit) {
   if (!fromUnit || !toUnit) return qty;
@@ -1967,10 +2082,18 @@ function handleActiveTableRealtime(payload) {
     document.getElementById('view-order').classList.contains('active') &&
     currentOrder.table === tname;
 
-  // If this device already marked the table removed locally (paid/cleared —
-  // possibly while offline), don't let a late-arriving INSERT/UPDATE bring
-  // it back. Clean up the phantom row in the cloud instead.
-  if (payload.eventType !== 'DELETE' && _getRemovedTombstones().includes(tname)) {
+  const _tombstones = _getRemovedTombstones();
+  if (payload.eventType !== 'DELETE' && _tombstones[tname]) {
+    const incomingUpdatedAt = payload.new?.updated_at ? new Date(payload.new.updated_at).getTime() : 0;
+    if (incomingUpdatedAt && incomingUpdatedAt > _tombstones[tname]) {
+      // A DIFFERENT till opened a genuinely new order on this table AFTER
+      // we cleared it locally — accept it instead of nuking their order.
+      console.log('✅ Newer order on tombstoned table — accepting, not deleting:', tname);
+      _clearTombstone(tname);
+      if (!isEditingThisTable) tableOrders[tname] = payload.new.order_data;
+      if (document.getElementById('view-tables').classList.contains('active')) renderTableMap();
+      return;
+    }
     console.log('🚫 Ignoring stale active_tables write for tombstoned table:', tname);
     if (sb) {
       sb.from('active_tables').delete()
@@ -1981,7 +2104,18 @@ function handleActiveTableRealtime(payload) {
   }
 
   if (payload.eventType === 'DELETE') {
-    if (!isEditingThisTable) delete tableOrders[tname];
+    if (isEditingThisTable) {
+      // Another till just paid/cleared THIS table while we were editing it.
+      // Lock this order from being saved further — resurrecting a paid
+      // table is worse than losing whatever we were mid-typing.
+      currentOrder._remotelyCleared = true;
+      showToast('⚠️ This table was just paid/cleared on another till — your screen has been reset.', 'error');
+      delete tableOrders[tname];
+      currentOrder = { table: null, type: 'Dine-In', items: [], id: null };
+      switchView('tables');
+    } else {
+      delete tableOrders[tname];
+    }
     _clearTombstone(tname);
   } else {
     if (!isEditingThisTable) tableOrders[tname] = payload.new.order_data;
@@ -2021,10 +2155,7 @@ function handleShiftTxRealtime(payload) {
   }
   document.getElementById('bar-billno').textContent = String(billCounter).padStart(3,'0');
 
-  cashInHand = openingBalance
-    + completedOrders.filter(o => o.method === 'cash').reduce((s,o) => s + o.total, 0)
-    + completedOrders.filter(o => o.method === 'split').reduce((s,o) => s + (o.splitCash||0), 0)
-    - completedOrders.filter(o => o.method === 'cash-out').reduce((s,o) => s + Math.abs(o.total), 0);
+  cashInHand = computeCashInHand(completedOrders, openingBalance);
   document.getElementById('bar-cash').textContent = 'Rs ' + cashInHand;
 
   if (document.getElementById('view-cash').classList.contains('active')) renderCashView();
@@ -2163,8 +2294,18 @@ async function openStaffManager() {
 }
 
 async function renderStaffTable() {
-  const { data: staffList, error } = await sb.from('staff').select('*').order('name');
-  if (error) { showToast('Failed to load staff', 'error'); return; }
+  let staffList = null;
+  if (isOnline && sb) {
+    try {
+      const { data, error } = await sb.from('staff').select('*').order('name');
+      if (!error && data) { staffList = data; localStorage.setItem(STAFF_CACHE_KEY, JSON.stringify(data)); }
+    } catch(e) {}
+  }
+  if (!staffList) {
+    try { staffList = JSON.parse(localStorage.getItem(STAFF_CACHE_KEY) || '[]'); } catch(e) { staffList = []; }
+    if (!staffList.length) { showToast('Offline — no cached staff list available', 'error'); return; }
+    showToast('📡 Offline — showing cached staff list. Edits need a connection.', 'error');
+  }
 
   document.getElementById('staff-tbody').innerHTML = staffList.map(s => {
     const p = s.permissions || {};
@@ -2206,6 +2347,7 @@ function toggleStaffPermRow(id) {
 }
 
 async function saveStaffPermissions(id) {
+  if (!isOnline) { showToast('Staff changes need an internet connection', 'error'); return; }
   const permissions = {};
   PERM_KEYS.forEach(k => { permissions[k] = document.getElementById(`sp_${id}_${k}`).checked; });
   const { error } = await sb.from('staff').update({ permissions }).eq('id', id);
@@ -2215,6 +2357,7 @@ async function saveStaffPermissions(id) {
 }
 
 async function createStaffUser() {
+  if (!isOnline) { showToast('Staff changes need an internet connection', 'error'); return; }
   const name = document.getElementById('ns-name').value.trim();
   const pin = document.getElementById('ns-pin').value.trim();
   const role = document.getElementById('ns-role').value;
@@ -2233,6 +2376,7 @@ async function createStaffUser() {
 }
 
 async function toggleStaffActive(id, newState) {
+  if (!isOnline) { showToast('Staff changes need an internet connection', 'error'); return; }
   const { error } = await sb.from('staff').update({ active: newState }).eq('id', id);
   if (error) { showToast('Failed to update status', 'error'); return; }
   showToast(newState ? 'Staff enabled' : 'Staff access revoked', 'success');
@@ -2240,6 +2384,7 @@ async function toggleStaffActive(id, newState) {
 }
 
 async function deleteStaffUser(id, name) {
+  if (!isOnline) { showToast('Staff changes need an internet connection', 'error'); return; }
   if (!confirm(`Permanently delete staff "${name}"?`)) return;
   const { error } = await sb.from('staff').delete().eq('id', id);
   if (error) { showToast('Failed to delete', 'error'); return; }
@@ -2285,7 +2430,7 @@ async function _loadActiveTables() {
   const localTables = loadLocalTables();
   const tombstones = _getRemovedTombstones();
   for (const tname in localTables) {
-    if (tombstones.includes(tname)) continue; // removed locally (e.g. paid offline) — don't resurrect
+    if (tombstones[tname]) continue; // removed locally (e.g. paid offline) — don't resurrect
     if (!tableOrders[tname]) tableOrders[tname] = localTables[tname];
   }
 
@@ -2335,7 +2480,7 @@ async function _loadActiveTables() {
       const order = row.order_data;
 
       if (!tname || !order) { staleRows.push(tname); continue; }
-      if (tombstones.includes(tname)) continue; // locally marked removed — stale cloud row, ignore
+      if (tombstones[tname]) continue; // locally marked removed — stale cloud row, ignore
       if (tableOrders[tname]) continue;
 
       // Check 1: kitchen_order_id was explicitly paid — always skip
@@ -2717,8 +2862,9 @@ async function backToTables() {
         saveTableOrder(); switchView('tables'); renderTableMap(); return;
       }
       const food = currentOrder.items.reduce((s,i)=>s+i.price*i.qty,0);
+      const _discId = genId();
       await sbWrite('shift_transactions', 'insert', [{
-        id: genId(), branch: activeBranch, date: todayKey(), bill_no: 'DISC',
+        id: _discId, branch: activeBranch, date: todayKey(), bill_no: 'DISC',
         type: currentOrder.type, table_loc: currentOrder.table || '',
         items_text: currentOrder.items.map(i=>i.qty+'x '+i.name).join(', '),
         subtotal: food, total: -food, method: 'discarded',
@@ -2726,6 +2872,7 @@ async function backToTables() {
         kitchen_order_id: currentOrder.id || null
       }]);
       completedOrders.push({
+        id: _discId,
         billNo:'DISC', table: currentOrder.table, type: currentOrder.type,
         items:[...currentOrder.items], total:-food, method:'discarded',
         time:new Date(), staff:currentStaff, branch:activeBranch,
@@ -2999,6 +3146,7 @@ function toggleSC() {
   scEnabled = !scEnabled;
   document.getElementById('sc-toggle-btn').classList.toggle('on', scEnabled);
   renderOrderTotals();
+  saveTableOrder();
 }
 function syncSCUI() {
   document.getElementById('sc-toggle-btn').classList.toggle('on', scEnabled);
@@ -3010,6 +3158,7 @@ function setDiscType(t) {
   discType = t;
   syncDiscUI();
   renderOrderTotals();
+  saveTableOrder();
 }
 function syncDiscUI() {
   document.getElementById('disc-flat-btn').classList.toggle('active', discType==='flat');
@@ -3308,6 +3457,7 @@ function addItemToOrder(item, price, qty=1, note='') {
 
 function saveTableOrder() {
   if (!currentOrder.table) return;
+  if (currentOrder._remotelyCleared) return; // table was paid/cleared elsewhere — don't resurrect it
  
   if (!currentOrder.items.length && !currentOrder.fromWeb) {
     delete tableOrders[currentOrder.table];
@@ -3390,8 +3540,13 @@ function renderOrderItems() {
 
 function changeItemQty(idx, d) {
   if (d < 0) { requestItemAdjustment(idx, 'decrease', d); return; }
+  const wasSentAlready = !!currentOrder.id || !!currentOrder.sentToKitchen;
   currentOrder.items[idx].qty += d;
   saveTableOrder(); renderOrderItems();
+  if (wasSentAlready) {
+    showToast('⚠️ Qty increased after KOT — printing updated kitchen ticket', 'error');
+    printKitchenTicket();
+  }
 }
 function removeItem(idx) { requestItemAdjustment(idx, 'remove', 0); }
 
@@ -3413,7 +3568,9 @@ async function requestItemAdjustment(idx, action, qtyDelta) {
   const removedQty = action === 'remove' ? item.qty : Math.abs(qtyDelta);
   const removedValue = item.price * removedQty;
 
+  const _adjId = genId();
   const adjLog = {
+    id: _adjId,
     billNo: 'ADJ', table: currentOrder.table, type: currentOrder.type,
     items: [{ ...item, qty: removedQty }], total: -removedValue,
     method: 'item-void', time: new Date(), staff: currentStaff, branch: activeBranch,
@@ -3423,7 +3580,7 @@ async function requestItemAdjustment(idx, action, qtyDelta) {
   };
   completedOrders.push(adjLog);
   await sbWrite('shift_transactions', 'insert', [{
-    id: genId(), branch: activeBranch, date: todayKey(), bill_no: 'ADJ', type: currentOrder.type,
+    id: _adjId, branch: activeBranch, date: todayKey(), bill_no: 'ADJ', type: currentOrder.type,
     table_loc: currentOrder.table || '', items_text: removedQty + 'x ' + item.name,
     subtotal: removedValue, total: -removedValue, method: 'item-void', staff: currentStaff,
     return_reason: reason.trim(), kitchen_order_id: currentOrder.id || null
@@ -3477,7 +3634,9 @@ async function returnItem(idx) {
   currentOrder.items[idx].returned = true;
   currentOrder.items[idx].returnReason = reason || 'No reason given';
   // Log the return
+  const _returnId = genId();
   const returnLog = {
+    id: _returnId,
     billNo: 'RTN',
     table: currentOrder.table, type: currentOrder.type,
     items: [{ ...item, qty: item.qty }],
@@ -3493,7 +3652,7 @@ async function returnItem(idx) {
   };
   completedOrders.push(returnLog);
   await sbWrite('shift_transactions', 'insert', [{
-    id: genId(), branch: activeBranch, date: todayKey(), bill_no: 'RTN', type: currentOrder.type,
+    id: _returnId, branch: activeBranch, date: todayKey(), bill_no: 'RTN', type: currentOrder.type,
     table_loc: currentOrder.table || '', items_text: item.qty + 'x ' + item.name,
     subtotal: item.price * item.qty, total: -(item.price * item.qty),
     method: 'return', staff: currentStaff, return_reason: reason || 'No reason given',
@@ -3563,8 +3722,17 @@ async function voidCurrentOrder() {
   const idToDelete = currentOrder.id;
   
   // Save to Supabase shift_transactions
+  const _voidId = genId();
+  completedOrders.push({
+    id: _voidId, billNo: 'VOID', table: currentOrder.table, type: currentOrder.type,
+    items: [...currentOrder.items], total: -food, method: 'void',
+    time: new Date(), staff: currentStaff, branch: activeBranch,
+    customerName: currentOrder.customerName || '', customerPhone: currentOrder.customerPhone || '',
+    deliveryAddress: '', deliveryCharge: 0, sc: 0, disc: 0, scPct: 0, discType: 'flat', discAmount: 0,
+    cashReceived: 0, splitCash: 0, splitCard: 0, returnReason: reason
+  });
   await sbWrite('shift_transactions', 'insert', [{
-    id: genId(),
+    id: _voidId,
     branch: activeBranch,
     date: todayKey(),
     bill_no: 'VOID',
@@ -3772,7 +3940,9 @@ function applySplitByItems() {
   var splitSC   = Math.round(fullTotals.sc * foodRatio);
   var splitDisc = Math.round(fullTotals.disc * discRatio);
   var splitTotal = Math.max(0, selectedFood + splitSC - splitDisc);
+  var _splitItemsSaleId = genId();
   var splitSale = {
+    id: _splitItemsSaleId,
     billNo: 'SPL', table: currentOrder.table, type: currentOrder.type,
     items: selected, total: splitTotal, method: splitItemMethod,
     time: new Date(), staff: currentStaff, branch: activeBranch,
@@ -3780,10 +3950,41 @@ function applySplitByItems() {
     customerPhone: currentOrder.customerPhone || '',
     deliveryAddress: '', deliveryCharge: 0,
     sc: splitSC, disc: splitDisc, scPct: pct, discType: discType, discAmount: discAmt,
+    kitchenOrderId: currentOrder.id || null,
     splitCash: 0, splitCard: 0
   };
+  splitSale.billNo = DEVICE_CODE + '-' + String(billCounter).padStart(3,'0');
+  completedOrders.push(splitSale);
+  deductInventoryForSale(splitSale);
+  sbWrite('shift_transactions', 'insert', [{
+    id: _splitItemsSaleId, branch: activeBranch, date: todayKey(),
+    bill_no: splitSale.billNo, type: currentOrder.type,
+    table_loc: currentOrder.table || '',
+    items_text: selected.map(function(i){return i.qty+'x '+i.name;}).join(', '),
+    subtotal: selectedFood, sc: splitSC, sc_pct: pct,
+    discount: splitDisc, delivery_charge: 0,
+    total: splitTotal, method: splitItemMethod,
+    cash_received: 0, split_cash: 0, split_card: 0,
+    staff: currentStaff,
+    customer_name: currentOrder.customerName || '',
+    customer_phone: currentOrder.customerPhone || '',
+    delivery_address: '', kitchen_order_id: currentOrder.id || null
+  }]);
+  if (splitItemMethod === 'cash') cashInHand += splitTotal;
+  salesTotal += splitTotal;
+  billCounter++;
+  document.getElementById('bar-cash').textContent = 'Rs ' + cashInHand;
+  document.getElementById('bar-billno').textContent = String(billCounter).padStart(3,'0');
+  saveTodaySales();
+
   printReceipt(splitSale);
   currentOrder.items = remaining;
+
+  var leftoverDisc = Math.max(0, fullTotals.disc - splitDisc);
+  document.getElementById('disc-amount').value = leftoverDisc;
+  discType = 'flat';
+  syncDiscUI();
+
   saveTableOrder();
   renderOrderItems();
   closeModal('split-modal');
@@ -3795,31 +3996,68 @@ function applySplitByAmount() {
   var perPerson = Math.ceil(total / splitPeople);
   var method = splitAmtMethod;
 
-  // Print one receipt per person
   for (var i = 1; i <= splitPeople; i++) {
     var isLast = i === splitPeople;
-    // Last person gets remainder to avoid rounding overage
     var thisAmount = isLast ? (total - perPerson * (splitPeople - 1)) : perPerson;
+
+    var thisMethod = method;
+    if (method === 'mixed') {
+      thisMethod = promptPaymentMethod('Person ' + i + ' of ' + splitPeople + ' — Rs ' + thisAmount + '. How did they pay?');
+      if (thisMethod === null) { showToast('Split payment cancelled — no bills recorded', 'error'); return; }
+    }
+
+    var billNo = DEVICE_CODE + '-' + String(billCounter).padStart(3,'0');
+    var _splitAmtSaleId = genId();
     var splitSale = {
-      billNo: 'SPL-' + i + '/' + splitPeople,
+      id: _splitAmtSaleId,
+      billNo: billNo,
       table: currentOrder.table, type: currentOrder.type,
       items: currentOrder.items,
-      total: thisAmount, method: method === 'mixed' ? 'cash' : method,
+      total: thisAmount, method: thisMethod,
       time: new Date(), staff: currentStaff, branch: activeBranch,
       customerName: currentOrder.customerName || '',
       customerPhone: currentOrder.customerPhone || '',
       deliveryAddress: '', deliveryCharge: 0,
       sc: 0, disc: 0, scPct: 0, discType: 'flat', discAmount: 0,
+      kitchenOrderId: currentOrder.id || null,
       splitCash: 0, splitCard: 0
     };
-    // Stagger prints slightly so printer doesn't jam
+
+    completedOrders.push(splitSale);
+    sbWrite('shift_transactions', 'insert', [{
+      id: _splitAmtSaleId, branch: activeBranch, date: todayKey(),
+      bill_no: billNo, type: currentOrder.type,
+      table_loc: currentOrder.table || '',
+      items_text: currentOrder.items.map(function(it){return it.qty+'x '+it.name;}).join(', ') + ' [split ' + i + '/' + splitPeople + ']',
+      subtotal: thisAmount, sc: 0, sc_pct: 0, discount: 0, delivery_charge: 0,
+      total: thisAmount, method: thisMethod,
+      cash_received: 0, split_cash: 0, split_card: 0,
+      staff: currentStaff,
+      customer_name: currentOrder.customerName || '',
+      customer_phone: currentOrder.customerPhone || '',
+      delivery_address: '', kitchen_order_id: currentOrder.id || null
+    }]);
+    if (thisMethod === 'cash') cashInHand += thisAmount;
+    salesTotal += thisAmount;
+    billCounter++;
+
     (function(sale) {
       setTimeout(function() { printReceipt(sale); }, (i - 1) * 800);
     })(splitSale);
   }
 
+  document.getElementById('bar-cash').textContent = 'Rs ' + cashInHand;
+  document.getElementById('bar-billno').textContent = String(billCounter).padStart(3,'0');
+  saveTodaySales();
+
+  const _splitTable = currentOrder.table;
+  if (_splitTable) { _saveActiveTable(_splitTable, null); }
+  currentOrder = { table: null, type: 'Dine-In', items: [], id: null };
+  switchView('tables');
+  renderTableMap();
+
   closeModal('split-modal');
-  showToast('Printing ' + splitPeople + ' split bills of Rs ' + perPerson + ' each', 'success');
+  showToast('Split into ' + splitPeople + ' bills — recorded ✅', 'success');
 }
 
 // ══════════════════════════════════
@@ -3838,7 +4076,7 @@ async function _assignKotNumber() {
     if (error || count === null || count === undefined) {
       throw error || new Error('no count returned');
     }
-    currentOrder.kotNo = String(count).padStart(3,'0');
+    currentOrder.kotNo = String(count).padStart(3,'0') + '-' + DEVICE_CODE;
   } catch(e) {
     currentOrder.kotNo = DEVICE_CODE + '-' + String(billCounter).padStart(3,'0');
   }
@@ -3968,17 +4206,23 @@ function printTakeawaySlip(sale) {
   setTimeout(function() { window.print(); document.getElementById('print-area').innerHTML = ''; }, 300);
 }
 async function markTakeawayPaid() {
+  if (_takeawayPaymentInProgress) { showToast('Payment already processing — wait', 'error'); return; }
+  _takeawayPaymentInProgress = true;
+  try { await _markTakeawayPaidInner(); }
+  finally { _takeawayPaymentInProgress = false; }
+}
+async function _markTakeawayPaidInner() {
   if (!currentOrder.items.length) { showToast('No items in order', 'error'); return; }
   const pct = 0; // no SC for takeaway
   const discAmt = parseFloat(document.getElementById('disc-amount').value) || 0;
   const { grand, disc } = getOrderTotal(currentOrder.items, currentOrder.type, false, 0, discAmt, discType, 0);
   // Ask payment method
-  const method = prompt('Payment method?\n1. Cash\n2. Card\n3. JazzCash\n4. Bank\n5. FoodPanda\n\nType number:');
-  if (method === null) { showToast('Payment cancelled — order kept open', 'error'); return; }
-  const methodMap = { '1':'cash','2':'card','3':'jazzcash','4':'bank','5':'foodpanda' };
-  const payM = methodMap[method] || 'cash';
+  const payM = promptPaymentMethod('Payment method?');
+  if (payM === null) { showToast('Payment cancelled — order kept open', 'error'); return; }
   const tokenNo = DEVICE_CODE + '-' + String(billCounter).padStart(3, '0');
+  const _twSaleId = genId();
   const sale = {
+    id: _twSaleId,
     billNo: tokenNo,
     table: currentOrder.table, type: currentOrder.type,
     items: [...currentOrder.items],
@@ -3986,6 +4230,7 @@ async function markTakeawayPaid() {
     time: new Date(), staff: currentStaff, branch: activeBranch,
     customerName: currentOrder.customerName || '',
     customerPhone: currentOrder.customerPhone || '',
+    kitchenOrderId: currentOrder.id || null,
     deliveryAddress: '', deliveryCharge: 0,
     sc: 0, disc, scPct: 0, discType, discAmount: discAmt,
     cashReceived: 0, splitCash: 0, splitCard: 0
@@ -4004,7 +4249,7 @@ async function markTakeawayPaid() {
   saveTodaySales();
   deductInventoryForSale(sale);
   await sbWrite('shift_transactions', 'insert', [{
-    id: (crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now()+'-'+Math.random().toString(36).slice(2)),
+    id: _twSaleId,
     branch: activeBranch, date: todayKey(),
     bill_no: sale.billNo, type: sale.type,
     table_loc: sale.table || '',
@@ -4147,12 +4392,15 @@ async function completePayment() {
  
     const billNo = DEVICE_CODE + '-' + String(billCounter).padStart(3, '0');
     const riderTag = (currentOrder.type === 'Delivery' && currentOrder.rider) ? ` [Rider: ${currentOrder.rider}]` : '';
+    const saleId = genId();
     const sale = {
+      id: saleId,
       billNo, table: currentOrder.table, type: currentOrder.type,
       items: [...currentOrder.items], total: grand, method: payMethod,
       time: new Date(), staff: currentStaff, branch: activeBranch,
       customerName: currentOrder.customerName || '',
       customerPhone: currentOrder.customerPhone || '',
+      kitchenOrderId: currentOrder.id || null,
       deliveryAddress: currentOrder.type === 'Delivery'
         ? (document.getElementById('delivery-address').value || '') : '',
       deliveryCharge: delCharge, sc, disc, scPct: pct, discType, discAmount: discAmt,
@@ -4171,7 +4419,7 @@ async function completePayment() {
     saveTodaySales(); // persist locally right away — survives a refresh even offline
     deductInventoryForSale(sale);
     await sbWrite('shift_transactions', 'insert', [{
-      id: (crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now()+'-'+Math.random().toString(36).slice(2)),
+      id: saleId,
       branch: activeBranch, date: todayKey(),
       bill_no: sale.billNo, type: sale.type,
       table_loc: sale.table || '',
@@ -4424,7 +4672,7 @@ async function renderDeliveryView() {
 
   const riders = BRANCHES[activeBranch].riders;
   riderBtns.innerHTML = riders.map(r =>
-    `<button onclick="showRiderAudit('${r}',${JSON.stringify(orders).replace(/'/g,"&#39;")})" style="padding:5px 12px;border-radius:20px;border:1.5px solid var(--border);background:var(--surface2);color:var(--text2);font-family:'Outfit',sans-serif;font-size:13px;font-weight:700;cursor:pointer;text-transform:uppercase;">${r}</button>`
+    `<button onclick="showRiderAudit('${r}',${JSON.stringify(orders).replace(/"/g,'&quot;')})" style="padding:5px 12px;border-radius:20px;border:1.5px solid var(--border);background:var(--surface2);color:var(--text2);font-family:'Outfit',sans-serif;font-size:13px;font-weight:700;cursor:pointer;text-transform:uppercase;">${r}</button>`
   ).join('');
 
   // Update delivery badge
@@ -4488,10 +4736,8 @@ async function updateDeliveryStatus(orderId, status, knownOrder) {
     // ✅ FIX 1: Ask payment method when marking delivered
     let paymentMethod = 'cash';
     if (status === 'OUT') {
-      const mc = prompt('How did customer pay?\n1. Cash\n2. JazzCash\n3. Card\n4. FoodPanda\n5. Bank Transfer\n\nEnter number (Enter = Cash):');
-      if (mc === null) { showToast('Cancelled — order not marked delivered', 'error'); return; }
-      const mm = { '1':'cash','2':'jazzcash','3':'card','4':'foodpanda','5':'bank' };
-      paymentMethod = mm[(mc||'').trim()] || 'cash';
+      paymentMethod = promptPaymentMethod('How did customer pay?');
+      if (paymentMethod === null) { showToast('Cancelled — order not marked delivered', 'error'); return; }
     }
     const updateData = { status };
     await sbWrite('kitchen_orders', 'update', updateData, { eq:[['id', orderId]] });
@@ -4527,7 +4773,9 @@ async function updateDeliveryStatus(orderId, status, knownOrder) {
               const billNo = DEVICE_CODE + '-' + String(billCounter).padStart(3, '0');
               const alreadySaved = completedOrders.find(o => o.kitchenOrderId === orderId);
               if (!alreadySaved) {
+                const _delSaleId = genId();
                 const sale = {
+                  id: _delSaleId,
                   billNo, table: ko.location, type: 'Delivery',
                   items: [], total: shopTotal, method: paymentMethod,
                 time: new Date(), staff: currentStaff, branch: activeBranch,
@@ -4541,7 +4789,7 @@ sc: 0, disc: ko.discount || 0, scPct: 0, discType: 'flat', discAmount: ko.discou
               };
               completedOrders.push(sale);
               await sbWrite('shift_transactions', 'insert', [{
-                id: genId(), branch: activeBranch, date: todayKey(),
+                id: _delSaleId, branch: activeBranch, date: todayKey(),
                 bill_no: billNo, type: 'Delivery',
                 table_loc: ko.location || '',
                 items_text: ko.items || '',
@@ -4666,8 +4914,7 @@ async function setOpeningBalance() {
   await sbWrite('opening_balance', 'upsert',
     [{ branch: activeBranch, date: todayKey(), amount: val, set_by: currentStaff }],
     { onConflict: 'branch,date' });
-const _delFees = completedOrders.filter(o=>o.type==='Delivery').reduce((s,o)=>s+(o.deliveryCharge||0),0);
-  cashInHand = openingBalance + completedOrders.filter(o=>o.method==='cash').reduce((s,o)=>s+o.total,0) + completedOrders.filter(o=>o.method==='split').reduce((s,o)=>s+(o.splitCash||0),0) - _delFees;
+cashInHand = computeCashInHand(completedOrders, openingBalance);
   document.getElementById('bar-cash').textContent = 'Rs '+cashInHand;
   renderCashView(); showToast('Opening balance set: Rs '+val,'success');
 }
@@ -4676,9 +4923,10 @@ async function addCashIn() {
   const amt = parseFloat(prompt('Cash In amount (Rs):')) || 0;
   if (!amt) return;
   const reason = prompt('Reason:') || 'Cash In';
-  completedOrders.push({ billNo:'CI', table:'', type:'Cash In', items:[{name:reason,price:amt,qty:1,note:''}], total:amt, method:'cash-in', time:new Date(), staff:currentStaff, branch:activeBranch, sc:0, disc:0 });
+  const _ciId = genId();
+  completedOrders.push({ id:_ciId, billNo:'CI', table:'', type:'Cash In', items:[{name:reason,price:amt,qty:1,note:''}], total:amt, method:'cash-in', time:new Date(), staff:currentStaff, branch:activeBranch, sc:0, disc:0 });
   await sbWrite('shift_transactions', 'insert', [{
-    id: genId(), branch: activeBranch, date: todayKey(),
+    id: _ciId, branch: activeBranch, date: todayKey(),
     bill_no: 'CI', type: 'Cash In', table_loc: '',
     items_text: reason, subtotal: amt, total: amt,
     method: 'cash-in', staff: currentStaff, return_reason: reason
@@ -4699,7 +4947,9 @@ async function addExpense() {
     if (!confirm('⚠️ Expense (Rs ' + amt + ') exceeds cash in drawer (Rs ' + cashInHand + ').\n\nRecord anyway?')) return;
   }
 
+  const _expId = genId();
   const expenseEntry = {
+    id: _expId,
     billNo: 'EXP',
     table: '',
     type: 'Expense',
@@ -4717,7 +4967,7 @@ async function addExpense() {
   completedOrders.push(expenseEntry);
   
   await sbWrite('shift_transactions', 'insert', [{
-    id: genId(),
+    id: _expId,
     branch: activeBranch,
     date: todayKey(),
     bill_no: 'EXP',
@@ -4742,9 +4992,10 @@ async function addCashOut() {
   const amt = parseFloat(prompt('Cash Out amount (Rs):')) || 0;
   if (!amt) return;
   const reason = prompt('Reason:') || 'Cash Out';
-  completedOrders.push({ billNo:'CO', table:'', type:'Cash Out', items:[{name:reason,price:amt,qty:1,note:''}], total:-amt, method:'cash-out', time:new Date(), staff:currentStaff, branch:activeBranch, sc:0, disc:0 });
+  const _coId = genId();
+  completedOrders.push({ id:_coId, billNo:'CO', table:'', type:'Cash Out', items:[{name:reason,price:amt,qty:1,note:''}], total:-amt, method:'cash-out', time:new Date(), staff:currentStaff, branch:activeBranch, sc:0, disc:0 });
   await sbWrite('shift_transactions', 'insert', [{
-    id: genId(), branch: activeBranch, date: todayKey(),
+    id: _coId, branch: activeBranch, date: todayKey(),
     bill_no: 'CO', type: 'Cash Out', table_loc: '',
     items_text: reason, subtotal: amt, total: -amt,
     method: 'cash-out', staff: currentStaff, return_reason: reason
@@ -4764,10 +5015,10 @@ function renderCashView(txList, openingBal, isRange) {
   const totalCash = cashSales + splitCash;
   const totalCard = cardSales + splitCard;
 const totalSales = orders.filter(o=>!['cash-in','cash-out'].includes(o.method)).reduce((s,o)=>s+o.total,0);
-  const totalDelFees = orders.filter(o=>o.type==='Delivery').reduce((s,o)=>s+(o.deliveryCharge||0),0);
+  const totalDelFees = sumDeliveryFeesHeldByRider(orders);
   const shopSales = totalSales - totalDelFees;  const cashOuts = orders.filter(o=>o.method==='cash-out').reduce((s,o)=>s+Math.abs(o.total),0);
   const expenses = orders.filter(o=>o.method==='expense').reduce((s,o)=>s+Math.abs(o.total),0);
-  const expected = opening + totalCash - totalDelFees - cashOuts - expenses;
+  const expected = computeCashInHand(orders, opening);
 
   document.getElementById('cash-cards').innerHTML = `
     <div class="cash-card"><div class="cash-card-label">Opening Balance</div><div class="cash-card-value">Rs ${opening}</div></div>
@@ -4840,15 +5091,16 @@ async function loadCashForRange(fromVal, toVal) {
     items: [], itemsText: t.items_text || '',
     total: t.total, method: t.method, time: new Date(t.created_at),
     staff: t.staff, deliveryAddress: t.delivery_address || '',
-    deliveryCharge: t.delivery_charge || 0
+    deliveryCharge: t.delivery_charge || 0,
+    splitCash: t.split_cash || 0, splitCard: t.split_card || 0,
+    kitchenOrderId: t.kitchen_order_id || null
   }));
 
-  let opening = 0;
-  try {
-    const { data: ob } = await sb.from('opening_balance').select('amount')
-      .eq('branch', activeBranch).eq('date', fromDate).maybeSingle();
-    if (ob) opening = ob.amount || 0;
-  } catch(e) {}
+  const _obResult = await fetchOpeningBalance(activeBranch, fromDate);
+  let opening = _obResult.amount;
+  if (!_obResult.ok) {
+    showToast('⚠️ Could not verify opening balance (offline) — treating as Rs 0, figures below may be off until reconnected.', 'error');
+  }
 
   _cashViewTxs = mapped;
   _cashViewOpening = opening;
@@ -4872,10 +5124,10 @@ async function printCashDrawerReport() {
   const splitCard = orders.filter(o=>o.method==='split').reduce((s,o)=>s+(o.splitCard||0),0);
   const totalCash = cashSales + splitCash;
   const totalCard = cardSales + splitCard;
-  const totalDelFees = orders.filter(o=>o.type==='Delivery').reduce((s,o)=>s+(o.deliveryCharge||0),0);
+  const totalDelFees = sumDeliveryFeesHeldByRider(orders);
   const cashOuts = orders.filter(o=>o.method==='cash-out').reduce((s,o)=>s+Math.abs(o.total),0);
   const expenses = orders.filter(o=>o.method==='expense').reduce((s,o)=>s+Math.abs(o.total),0);
-  const expected = opening + totalCash - totalDelFees - cashOuts - expenses;
+  const expected = computeCashInHand(orders, opening);
   const billsCount = orders.filter(o=>!['cash-in','cash-out'].includes(o.method)).length;
 
   const fromLabel = fromVal.replace('T',' ');
@@ -4959,12 +5211,11 @@ async function renderClosingReport() {
   const totalDelCharges = deliveryFeesOnly;
   const avg = billsOnly.length > 0 ? Math.round(shopTotal/billsOnly.length) : 0;
 
-  let opening = 0;
-  try {
-    const { data: ob } = await sb.from('opening_balance').select('amount')
-      .eq('branch', activeBranch).eq('date', fromDate).maybeSingle();
-    if (ob) opening = ob.amount || 0;
-  } catch(e) {}
+  const _obResult = await fetchOpeningBalance(activeBranch, fromDate);
+  let opening = _obResult.amount;
+  if (!_obResult.ok) {
+    showToast('⚠️ Could not verify opening balance (offline) — treating as Rs 0, figures below may be off until reconnected.', 'error');
+  }
 
   const existingAdminBtn = document.getElementById('admin-delete-today-btn');
   if (existingAdminBtn) existingAdminBtn.remove();
@@ -4982,7 +5233,7 @@ async function renderClosingReport() {
     <div class="cs-card orange"><div class="cs-val">Rs ${deliveryFeesOnly}</div><div class="cs-lbl">Del Fees</div></div>    <div class="cs-card orange"><div class="cs-val">${billsOnly.length}</div><div class="cs-lbl">Bills Issued</div></div>
 <div class="cs-card red"><div class="cs-val">Rs ${totalCash}</div><div class="cs-lbl">Cash Collected</div></div>
 <div class="cs-card blue"><div class="cs-val">Rs ${totalCard}</div><div class="cs-lbl">Card Collected</div></div>
-    <div class="cs-card green"><div class="cs-val">Rs ${opening+totalCash-cashOuts-expenses}</div><div class="cs-lbl">Expected in Drawer</div></div>
+    <div class="cs-card green"><div class="cs-val">Rs ${computeCashInHand(txs, opening)}</div><div class="cs-lbl">Expected in Drawer</div></div>
     <div class="cs-card red"><div class="cs-val">Rs ${expenses}</div><div class="cs-lbl">Expenses</div></div>
     <div class="cs-card orange"><div class="cs-val">Rs ${avg}</div><div class="cs-lbl">Avg Bill Value</div></div>
   `;
@@ -5070,12 +5321,11 @@ async function printClosingReport() {
   const cashOuts = txs.filter(t=>t.method==='cash-out').reduce((s,t)=>s+Math.abs(t.total),0);
   const expenses = sales.filter(t=>t.method==='expense').reduce((s,t)=>s+Math.abs(t.total),0);
 
-  let opening = 0;
-  try {
-    const { data: ob } = await sb.from('opening_balance').select('amount')
-      .eq('branch', activeBranch).eq('date', fromDate).maybeSingle();
-    if (ob) opening = ob.amount || 0;
-  } catch(e) {}
+  const _obResult = await fetchOpeningBalance(activeBranch, fromDate);
+  let opening = _obResult.amount;
+  if (!_obResult.ok) {
+    showToast('⚠️ Could not verify opening balance (offline) — treating as Rs 0, figures below may be off until reconnected.', 'error');
+  }
 
   const now = new Date();
   document.getElementById('print-area').innerHTML = `
@@ -5094,7 +5344,7 @@ async function printClosingReport() {
         <div style="display:flex;justify-content:space-between;"><span>Cash Outs:</span><span>Rs ${cashOuts}</span></div>
         <div style="display:flex;justify-content:space-between;"><span>Expenses:</span><span>Rs ${expenses}</span></div>
         <div style="display:flex;justify-content:space-between;"><span>Opening Bal:</span><span>Rs ${opening}</span></div>
-        <div style="display:flex;justify-content:space-between;border-top:1px solid #000;padding-top:2px;font-weight:900;font-size:13px;"><span>Hand Over:</span><span>Rs ${opening+cash-cashOuts-expenses}</span></div>
+        <div style="display:flex;justify-content:space-between;border-top:1px solid #000;padding-top:2px;font-weight:900;font-size:13px;"><span>Hand Over:</span><span>Rs ${computeCashInHand(txs, opening)}</span></div>
       </div>
       <div style="border-top:1px dashed #000;margin-top:5px;padding-top:4px;font-size:11px;text-align:center;">Printed by: ${currentStaff} — ${now.toLocaleString('en-PK')}</div>
     </div>`;
@@ -5146,12 +5396,11 @@ async function exportClosingExcel() {
   const voids = sales.filter(t=>t.method==='void');
   const voidTotal = voids.reduce((s,t)=>s+Math.abs(t.total),0);
 
-  let opening = 0;
-  try {
-    const { data: ob } = await sb.from('opening_balance').select('amount')
-      .eq('branch', activeBranch).eq('date', fromDate).maybeSingle();
-    if (ob) opening = ob.amount || 0;
-  } catch(e) {}
+  const _obResult = await fetchOpeningBalance(activeBranch, fromDate);
+  let opening = _obResult.amount;
+  if (!_obResult.ok) {
+    showToast('⚠️ Could not verify opening balance (offline) — treating as Rs 0, figures below may be off until reconnected.', 'error');
+  }
 
   lines.push('SUMMARY');
   lines.push(`Total Sales,Rs ${total}`);
@@ -5165,7 +5414,7 @@ async function exportClosingExcel() {
   lines.push(`Cash Outs,Rs ${cashOuts}`);
   lines.push(`Expenses,Rs ${expenses}`);
   lines.push(`Opening Balance,Rs ${opening}`);
-  lines.push(`Total to Hand Over,Rs ${opening + cash - cashOuts - expenses}`);
+  lines.push(`Total to Hand Over,Rs ${computeCashInHand(txs, opening)}`);
   lines.push('');
 
   lines.push('ALL TRANSACTIONS');
@@ -5240,6 +5489,9 @@ async function loadTodaySales() {
       document.getElementById('bar-cash').textContent = 'Rs 0';
       document.getElementById('bar-billno').textContent = '001';
       document.getElementById('opening-bal-input').value = '';
+      // Still restore any tables opened AFTER the close was run today
+      await _loadActiveTables();
+      await _recoverOrdersFromKitchen();
       return;
     }
 
@@ -5300,10 +5552,7 @@ async function loadTodaySales() {
     salesTotal = completedOrders
       .filter(o => !['cash-in','cash-out'].includes(o.method))
       .reduce((s,o) => s + o.total, 0);
-    cashInHand = openingBalance
-      + completedOrders.filter(o => o.method === 'cash').reduce((s,o) => s + o.total, 0)
-      + completedOrders.filter(o => o.method === 'split').reduce((s,o) => s + (o.splitCash||0), 0)
-      - completedOrders.filter(o => o.method === 'cash-out').reduce((s,o) => s + Math.abs(o.total), 0);
+    cashInHand = computeCashInHand(completedOrders, openingBalance);
 
     document.getElementById('bar-cash').textContent = 'Rs ' + cashInHand;
     document.getElementById('bar-billno').textContent = String(billCounter).padStart(3,'0');
@@ -5585,7 +5834,7 @@ async function loadHistoryForRange(fromDateTime, toDateTime) {
     const rangeVoidTotal = rangeVoids.reduce((s,t) => s + Math.abs(t.total), 0);
     const rangeExpenses = (txs||[]).filter(t => t.method === 'expense').reduce((s,t) => s + Math.abs(t.total), 0);
     const rangeCashOuts = (txs||[]).filter(t => t.method === 'cash-out').reduce((s,t) => s + Math.abs(t.total), 0);
-    const rangeHandOver = rangeCash - rangeCashOuts - rangeExpenses;
+    const rangeHandOver = computeCashInHand(txs, 0);
 
     const rangeSummaryHTML = `
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:16px 20px;margin-bottom:16px;">
@@ -5763,14 +6012,14 @@ async function closeAllShifts() {
 
   await saveShiftReport();
 
-  // Best-effort — just marks stray orders visually closed, not safety-critical.
-  if (sb && isOnline) {
-    try {
-      await sb.from('kitchen_orders')
-        .update({ status: 'CLOSED', closed_at: new Date().toISOString(), closed_by: currentStaff })
-        .eq('branch', activeBranch)
-        .in('status', ['WAITING', 'PREPARING', 'READY']);
-    } catch(e) { console.warn('kitchen_orders close (non-critical):', e.message); }
+  // Routed through sbWrite so this queues + retries when offline instead of
+  // silently vanishing — an offline close used to leave these orders open
+  // forever, and _recoverOrdersFromKitchen() would resurrect them later.
+  for (const st of ['WAITING','PREPARING','READY']) {
+    await sbWrite('kitchen_orders', 'update',
+      { status: 'CLOSED', closed_at: new Date().toISOString(), closed_by: currentStaff },
+      { eq: [['branch', activeBranch], ['status', st]] }
+    );
   }
 
   // CRITICAL: the actual closure record — must queue if it fails, never vanish.
@@ -5836,6 +6085,7 @@ async function closeAllShifts() {
       localStorage.removeItem('crustify_completed_' + activeBranch + '_' + todayKey());
       localStorage.removeItem('crustify_tables_' + activeBranch);
       localStorage.removeItem('crustify_removed_' + activeBranch);
+      if (sb) sb.from('active_tables').delete().eq('branch', activeBranch).catch(()=>{});
       completedOrders = [];
       tableOrders = {};
       openingBalance = 0;
@@ -5944,6 +6194,7 @@ async function closeAllShiftsAndArchive() {
       localStorage.removeItem('crustify_completed_' + activeBranch + '_' + todayKey());
       localStorage.removeItem('crustify_tables_' + activeBranch);
       localStorage.removeItem('crustify_removed_' + activeBranch);
+      if (sb) sb.from('active_tables').delete().eq('branch', activeBranch).catch(()=>{});
       completedOrders = [];
       tableOrders = {};
       openingBalance = 0;
@@ -6077,15 +6328,10 @@ let _adminTxDate    = '';
 let _adminTxBranch  = '';
 
 function _recalcAllTotals() {
-  // Recalculate cashInHand and salesTotal from completedOrders
   salesTotal = completedOrders
     .filter(o => !['cash-in','cash-out'].includes(o.method))
     .reduce((s,o) => s + o.total, 0);
-  cashInHand = openingBalance
-    + completedOrders.filter(o => o.method === 'cash').reduce((s,o) => s + o.total, 0)
-    + completedOrders.filter(o => o.method === 'split').reduce((s,o) => s + (o.splitCash||0), 0)
-    - completedOrders.filter(o => o.method === 'cash-out').reduce((s,o) => s + Math.abs(o.total), 0)
-    - completedOrders.filter(o => o.type === 'Delivery').reduce((s,o) => s + (o.deliveryCharge||0), 0);
+  cashInHand = computeCashInHand(completedOrders, openingBalance);
   document.getElementById('bar-cash').textContent = 'Rs ' + cashInHand;
 }
 
@@ -6419,10 +6665,26 @@ async function aRefreshAll() {
   aLoadOverview();
 }
 
+const ANALYTICS_CACHE_KEY = 'crustify_analytics_cache';
+
 async function aLoadTransactions() {
+  const from = document.getElementById('a-date-from').value;
+  const to = document.getElementById('a-date-to').value;
+
+  if (!isOnline) {
+    try {
+      const cached = JSON.parse(localStorage.getItem(ANALYTICS_CACHE_KEY + '_' + activeBranch) || 'null');
+      if (cached) {
+        _aTxData = cached.data;
+        showToast('📡 Offline — showing analytics as of ' + new Date(cached.savedAt).toLocaleString('en-PK'), 'error');
+        return _aTxData;
+      }
+    } catch(e) {}
+    showToast('Offline — no cached analytics available yet', 'error');
+    return [];
+  }
+
   try {
-    const from = document.getElementById('a-date-from').value;
-    const to = document.getElementById('a-date-to').value;
     const { data } = await sb.from('shift_transactions')
       .select('*').eq('branch', activeBranch)
       .gte('created_at', _dtLocalToISO(from)).lte('created_at', _dtLocalToISO(to))
@@ -6432,8 +6694,16 @@ async function aLoadTransactions() {
       .filter(t => !['cash-in','cash-out','void'].includes(t.method));
     const pendingCount = _aTxData.filter(t => t._pending).length;
     if (pendingCount) showToast(pendingCount + ' sale(s) not yet synced — included from local queue', 'error');
+    try { localStorage.setItem(ANALYTICS_CACHE_KEY + '_' + activeBranch, JSON.stringify({ data: _aTxData, savedAt: Date.now() })); } catch(e) {}
     return _aTxData;
-  } catch(e) { console.error('aLoadTransactions:', e); return []; }
+  } catch(e) {
+    console.error('aLoadTransactions:', e);
+    try {
+      const cached = JSON.parse(localStorage.getItem(ANALYTICS_CACHE_KEY + '_' + activeBranch) || 'null');
+      if (cached) { _aTxData = cached.data; showToast('⚠️ Network error — showing last cached analytics', 'error'); return _aTxData; }
+    } catch(e2) {}
+    return [];
+  }
 }
 
 function aGetCat(name) {
@@ -6699,6 +6969,18 @@ function aPopulateMenuSelector() {
 async function aLoadAllRecipes() {
   const listEl=document.getElementById('a-recipes-list');
   listEl.innerHTML='<div style="color:#555d70;font-size:12px;padding:12px;">Loading...</div>';
+  if (!isOnline) {
+    const names = Object.keys(_recipeCache);
+    if (!names.length) { listEl.innerHTML = '<div style="color:#555d70;font-size:13px;padding:16px;text-align:center;">Offline — no cached recipes yet.</div>'; return; }
+    listEl.innerHTML = names.map(name => `
+      <div style="background:#1c1f27;border:1px solid rgba(255,255,255,0.07);border-radius:10px;padding:12px;margin-bottom:8px;">
+        <div style="font-size:13px;font-weight:800;color:#f0f0f0;margin-bottom:7px;">${name} <span style="color:#e67e22;font-size:10px;">(cached — offline)</span></div>
+        <div style="display:flex;flex-wrap:wrap;gap:5px;">
+          ${(_recipeCache[name]||[]).map(ing=>`<span style="padding:3px 8px;border-radius:5px;background:#242830;font-size:12px;color:#9aa0b0;">${ing.qty}${ing.unit} ${ing.name}</span>`).join('')}
+        </div>
+      </div>`).join('');
+    return;
+  }
   try {
     const{data}=await sb.from('item_recipes').select('*').eq('branch',activeBranch).order('item_name');
     _aRecipes={};
@@ -6764,14 +7046,21 @@ async function aSaveRecipe() {
     if(ingredient_id&&qty>0)ingredients.push({ingredient_id,name,qty,unit});
   });
   if(!ingredients.length){showToast('Add at least one ingredient','error');return;}
-  try {
-    const{error}=await sb.from('item_recipes').upsert([{branch:activeBranch,item_name:itemName,ingredients,updated_at:new Date().toISOString()}],{onConflict:'branch,item_name'});
-    if(error)throw error;
-    _recipeCache[itemName]=ingredients;
-    localStorage.setItem(RECIPE_CACHE_KEY + '_' + activeBranch, JSON.stringify(_recipeCache));
-    showToast('Recipe saved for '+itemName+' ✅','success');
-    aLoadAllRecipes();
-  } catch(e){showToast('Save failed: '+e.message,'error');}
+
+  // Update local cache FIRST — the edit is never lost even if the
+  // network write below fails or is offline.
+  _recipeCache[itemName] = ingredients;
+  try { localStorage.setItem(RECIPE_CACHE_KEY + '_' + activeBranch, JSON.stringify(_recipeCache)); } catch(e) {}
+
+  const res = await sbWrite('item_recipes', 'upsert',
+    [{ branch: activeBranch, item_name: itemName, ingredients, updated_at: new Date().toISOString() }],
+    { onConflict: 'branch,item_name' });
+
+  if (res && res.queued) showToast('📡 Offline — recipe saved locally, will sync when back online', 'error');
+  else if (res && res.error) showToast('Save failed: ' + res.error, 'error');
+  else showToast('Recipe saved for ' + itemName + ' ✅', 'success');
+
+  aLoadAllRecipes();
 }
 
 function aEditRecipe(itemName, ingredients) {
