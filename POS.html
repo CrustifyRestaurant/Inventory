@@ -1907,7 +1907,10 @@ function startLiveReload() {
         schema: 'public',
         table: 'active_tables',
         filter: `branch=eq.${activeBranch}`
-      }, (payload) => handleActiveTableRealtime(payload))
+      }, (payload) => {
+        handleActiveTableRealtime(payload); // instant optimistic update when possible
+        _scheduleTableMapReload();          // guaranteed correction shortly after, always
+      })
       .subscribe();
 
     // 2) Completed sales — cash drawer, closing report, per-staff totals
@@ -1949,6 +1952,24 @@ function startLiveReload() {
     if (document.getElementById('view-cash').classList.contains('active')) renderCashView();
     if (document.getElementById('view-delivery').classList.contains('active')) renderDeliveryView();
   }, 300000); // 5 minutes, not 60s
+}
+
+// Guaranteed-correct backstop: whenever ANY change happens on active_tables,
+// re-fetch the real list from the cloud shortly after — same approach the
+// Delivery view already uses successfully. This covers cases where the
+// realtime payload didn't include enough detail to patch locally (Supabase
+// doesn't always send full row data on DELETE), so the screen self-corrects
+// instead of getting stuck until a manual refresh.
+let _tableMapReloadTimer = null;
+function _scheduleTableMapReload() {
+  if (_tableMapReloadTimer) clearTimeout(_tableMapReloadTimer);
+  _tableMapReloadTimer = setTimeout(async () => {
+    _tableMapReloadTimer = null;
+    await _loadActiveTables();
+    if (document.getElementById('view-tables')?.classList.contains('active')) {
+      renderTableMap();
+    }
+  }, 600); // small delay so rapid-fire changes only trigger one reload
 }
 
 // Applies a realtime active_tables change to local state and re-renders
