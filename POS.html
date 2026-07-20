@@ -448,6 +448,14 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
 <div id="print-area"></div>
 <div class="toast" id="toast"></div>
 
+<div id="offline-overlay" style="display:none;position:fixed;inset:0;z-index:99999;background:rgba(10,10,12,0.97);backdrop-filter:blur(6px);align-items:center;justify-content:center;flex-direction:column;text-align:center;padding:24px;">
+  <div style="font-size:56px;margin-bottom:14px;">📡</div>
+  <div style="font-family:'Outfit',sans-serif;font-size:22px;font-weight:900;color:white;margin-bottom:8px;">No Internet Connection</div>
+  <div style="font-family:'Outfit',sans-serif;font-size:14px;color:#9aa0b0;max-width:360px;line-height:1.6;">
+    Crustify POS needs a live connection to work safely. Please check your Wi-Fi / internet — this screen will disappear automatically once you're back online.
+  </div>
+</div>
+
 <!-- LOGIN -->
 <div id="login-screen">
   <div class="login-box">
@@ -1176,230 +1184,102 @@ let sb;
 try { sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY); } catch(e) { console.error('Supabase failed'); }
 
 // ══════════════════════════════════
-// OFFLINE QUEUE SYSTEM
+// CONNECTIVITY GATE — Online-Only Mode
+// No offline queue exists. If Supabase can't be reached, the whole app
+// is blocked behind a full-screen overlay until connection returns.
 // ══════════════════════════════════
-const OFFLINE_QUEUE_KEY = 'crustify_offline_queue';
-const STAFF_CACHE_KEY = 'crustify_staff_cache';
 let isOnline = navigator.onLine;
-let syncInProgress = false;
+let _connectivityCheckInProgress = false;
 
-function getPendingQueuedTxRows(branch) {
-  try {
-    return getQueue()
-      .filter(item => item.table === 'shift_transactions' && item.op === 'insert')
-      .flatMap(item => (item.payload || []).map(row => ({ ...row, _pending: true })))
-      .filter(row => row.branch === branch);
-  } catch(e) { return []; }
-}
-function mergeInPendingTx(txs, branch, fromDateISO, toDateISO) {
-  const fromMs = fromDateISO ? new Date(fromDateISO).getTime() : -Infinity;
-  const toMs   = toDateISO   ? new Date(toDateISO).getTime()   : Infinity;
-  const pending = getPendingQueuedTxRows(branch).filter(r => {
-    if (!r.created_at) return true;
-    const t = new Date(r.created_at).getTime();
-    return t >= fromMs && t <= toMs;
-  });
-  if (!pending.length) return txs;
-  const known = new Set(txs.map(t => t.id).filter(Boolean));
-  pending.forEach(p => {
-    if (!p.id || !known.has(p.id)) txs.push(p);
-  });
-  return txs.sort((a,b) => new Date(a.created_at) - new Date(b.created_at));
+function showOfflineBlock() {
+  isOnline = false;
+  updateConnectionUI();
 }
 
-function getQueue() {
-  try { return JSON.parse(localStorage.getItem(OFFLINE_QUEUE_KEY) || '[]'); }
-  catch(e) { return []; }
-}
-function saveQueue(q) {
-  try {
-    localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(q));
-  } catch(e) {
-    console.error('OFFLINE QUEUE STORAGE FULL — a sale may not be saved!', e);
-    showToast('⚠️ Device storage full — this may NOT be saved offline! Reconnect immediately.', 'error');
-  }
-  updateOfflineBadge();
-}
-function queueOfflineAction(table, op, payload, match) {
-  const q = getQueue();
-  if (table === 'shift_transactions' && op === 'insert' && Array.isArray(payload)) {
-    payload = payload.map(r => ({ ...r, created_at: r.created_at || new Date().toISOString() }));
-  }
-  q.push({ id: Date.now()+'-'+Math.random().toString(36).slice(2), table, op, payload, match, ts: Date.now() });
-  saveQueue(q);
-}
-
-function updateOfflineBadge() {
-  const q = getQueue();
+function updateConnectionUI() {
+  const overlay = document.getElementById('offline-overlay');
   const badge = document.getElementById('offline-badge');
-  if (!badge) return;
   if (!isOnline) {
-    badge.style.display = 'flex';
-    badge.style.background = 'rgba(192,57,43,0.2)';
-    badge.style.color = '#c0392b';
-    badge.textContent = '📡 OFFLINE' + (q.length ? ' · '+q.length+' pending' : '');
-  } else if (q.length > 0) {
-    badge.style.display = 'flex';
-    badge.style.background = 'rgba(230,126,34,0.2)';
-    badge.style.color = '#e67e22';
-    badge.textContent = '🔄 Syncing '+q.length+'...';
+    if (overlay) overlay.style.display = 'flex';
+    if (badge) {
+      badge.style.display = 'flex';
+      badge.style.background = 'rgba(192,57,43,0.2)';
+      badge.style.color = '#c0392b';
+      badge.textContent = '📡 NO INTERNET';
+    }
   } else {
-    badge.style.display = 'none';
+    if (overlay) overlay.style.display = 'none';
+    if (badge) badge.style.display = 'none';
   }
 }
-function persistLocalTables() {
-  try { localStorage.setItem('crustify_tables_' + activeBranch, JSON.stringify(tableOrders)); }
-  catch(e) { console.error('persistLocalTables failed', e); }
-}
-function loadLocalTables() {
-  try { return JSON.parse(localStorage.getItem('crustify_tables_' + activeBranch) || '{}'); }
-  catch(e) { return {}; }
-}
-function _markTableRemoved(tname) {
-  try {
-    const key = 'crustify_removed_' + activeBranch;
-    const map = JSON.parse(localStorage.getItem(key) || '{}');
-    map[tname] = Date.now(); // remember WHEN we cleared it, not just that we did
-    localStorage.setItem(key, JSON.stringify(map));
-  } catch(e) {}
-}
-function _clearTombstone(tname) {
-  try {
-    const map = JSON.parse(localStorage.getItem('crustify_removed_' + activeBranch) || '{}');
-    delete map[tname];
-    localStorage.setItem('crustify_removed_' + activeBranch, JSON.stringify(map));
-  } catch(e) {}
-}
-function _getRemovedTombstones() {
-  try { return JSON.parse(localStorage.getItem('crustify_removed_' + activeBranch) || '{}'); }
-  catch(e) { return {}; }
-}
-function persistLocalCompleted() {
-  try {
-    localStorage.setItem('crustify_completed_' + activeBranch + '_' + todayKey(), JSON.stringify({
-      completedOrders, billCounter, openingBalance, cashInHand, salesTotal,
-      paidOrderIds: [...paidOrderIds], voidedOrderIds: [...voidedOrderIds]
-    }));
-  } catch(e) { console.error('persistLocalCompleted failed', e); }
-}
-function loadLocalCompleted() {
-  try {
-    const raw = localStorage.getItem('crustify_completed_' + activeBranch + '_' + todayKey());
-    return raw ? JSON.parse(raw) : null;
-  } catch(e) { return null; }
-}
+function updateOfflineBadge() { updateConnectionUI(); }
 
-async function sbWrite(table, op, payload, match) {
-  if (!sb) return { error:'no-client' };
-  if (!isOnline) { queueOfflineAction(table, op, payload, match); return { queued:true }; }
-  try {
-    let res;
-    if (op === 'insert' && payload && payload[0] && payload[0].id) {
-      res = await sb.from(table).upsert(payload, {onConflict:'id'}).select();
-    }
-    else if (op === 'insert') res = await sb.from(table).insert(payload).select();
-    else if (op === 'upsert') res = await sb.from(table).upsert(payload, match?.onConflict ? {onConflict:match.onConflict} : undefined).select();
-    else if (op === 'update') {
-      let q = sb.from(table).update(payload);
-      (match?.eq||[]).forEach(([k,v]) => q = q.eq(k,v));
-      res = await q.select();
-    } else if (op === 'delete') {
-      let q = sb.from(table).delete();
-      (match?.eq||[]).forEach(([k,v]) => q = q.eq(k,v));
-      res = await q;
-    }
-    if (res.error || res === undefined) throw (res && res.error) || new Error('write returned no result');
-    return res;
-  } catch(e) {
-    console.warn('Write failed — queued offline:', table, op, e.message);
-    queueOfflineAction(table, op, payload, match);
-    return { queued:true };
-  }
-}
-
-function _collapseActiveTableQueue(q) {
-  // Keep only the LAST queued write per (branch+table_name) for active_tables.
-  // Earlier upserts for the same table are stale once a later action exists —
-  // replaying them out of order is what resurrects paid/cleared tables.
-  const lastIdx = {};
-  q.forEach((item, idx) => {
-    if (item.table !== 'active_tables') return;
-    const key = item.op === 'delete'
-      ? (item.match?.eq || []).find(([k]) => k === 'table_name')?.[1]
-      : item.payload?.[0]?.table_name;
-    if (key) lastIdx[key] = idx;
-  });
-  return q.filter((item, idx) => {
-    if (item.table !== 'active_tables') return true;
-    const key = item.op === 'delete'
-      ? (item.match?.eq || []).find(([k]) => k === 'table_name')?.[1]
-      : item.payload?.[0]?.table_name;
-    return !key || lastIdx[key] === idx;
-  });
-}
-
-async function flushOfflineQueue() {
-  if (syncInProgress || !isOnline || !sb) return;
-  let q = _collapseActiveTableQueue(getQueue());
-  if (!q.length) return;
-  syncInProgress = true; updateOfflineBadge();
-  const remaining = [];
-  for (const item of q) {
-    try {
-      if (item.table === 'inventory_ops') {
-        await _runInventoryOp(item.op, item.payload);
-        continue;
-      }
-      let res;
-      if (item.op === 'insert' && item.payload && item.payload[0] && item.payload[0].id) {
-        res = await sb.from(item.table).upsert(item.payload, {onConflict:'id'});
-      }
-      else if (item.op === 'insert') res = await sb.from(item.table).insert(item.payload);
-      else if (item.op === 'upsert') res = await sb.from(item.table).upsert(item.payload, item.match?.onConflict ? {onConflict:item.match.onConflict} : undefined);
-      else if (item.op === 'update') {
-        let qy = sb.from(item.table).update(item.payload);
-        (item.match?.eq||[]).forEach(([k,v]) => qy = qy.eq(k,v));
-        res = await qy;
-      }
-      else if (item.op === 'delete') {
-        let qy = sb.from(item.table).delete();
-        (item.match?.eq||[]).forEach(([k,v]) => qy = qy.eq(k,v));
-        res = await qy;
-      }
-      if (res.error) throw res.error;
-      if (item.table === 'active_tables' && item.op === 'delete') {
-        const tnameMatch = (item.match?.eq || []).find(([k]) => k === 'table_name');
-        if (tnameMatch) _clearTombstone(tnameMatch[1]);
-      }
-    } catch(e) { remaining.push(item); }
-  }
-  saveQueue(remaining);
-  syncInProgress = false; updateOfflineBadge();
-  if (remaining.length === 0) showToast('✅ All offline data synced', 'success');
-  else if (q.length) showToast(remaining.length + ' items still pending sync', 'error');
-}
-
-window.addEventListener('online', () => { isOnline = true; updateOfflineBadge(); showToast('Back online — syncing...', 'success'); flushOfflineQueue(); });
-window.addEventListener('offline', () => { isOnline = false; updateOfflineBadge(); showToast('No internet — working offline', 'error'); });
-
-setInterval(async () => {
-  if (!sb) return;
+async function checkConnectivity() {
+  if (!sb || _connectivityCheckInProgress) return isOnline;
+  _connectivityCheckInProgress = true;
   try {
     const { error } = await sb.from('staff').select('id').limit(1);
     const wasOffline = !isOnline;
     isOnline = !error;
-    if (wasOffline && isOnline) {
-      showToast('Back online — syncing...', 'success');
-      flushOfflineQueue();
-    } else if (isOnline && getQueue().length > 0) {
-      // Queue didn't fully drain on the last attempt (transient error) —
-      // keep retrying instead of leaving it stuck until the next
-      // offline→online transition.
-      flushOfflineQueue();
+    if (wasOffline && isOnline) showToast('Back online ✅', 'success');
+    if (!wasOffline && !isOnline) showToast('⚠️ Connection lost — check your internet', 'error');
+  } catch (e) {
+    isOnline = false;
+  } finally {
+    _connectivityCheckInProgress = false;
+    updateConnectionUI();
+  }
+  return isOnline;
+}
+
+window.addEventListener('online', () => { checkConnectivity(); });
+window.addEventListener('offline', () => { isOnline = false; updateConnectionUI(); showToast('No internet connection', 'error'); });
+
+setInterval(checkConnectivity, 4000);
+checkConnectivity();
+
+// Stubs — kept so other functions in the file that still reference the old
+// offline-queue API don't throw. They are permanently empty/no-op now.
+function getPendingQueuedTxRows() { return []; }
+function mergeInPendingTx(txs) { return txs || []; }
+function getQueue() { return []; }
+function queueOfflineAction() { /* removed — online-only mode */ }
+async function flushOfflineQueue() { return; }
+
+// ══════════════════════════════════
+// SUPABASE WRITE — hardened, no offline queue.
+// On failure this returns {error:...} and does NOT retry silently later.
+// Every caller that touches money or table state MUST check the result
+// before updating local UI state.
+// ══════════════════════════════════
+async function sbWrite(table, op, payload, match) {
+  if (!sb) return { error: 'no-client' };
+  if (!isOnline) { showOfflineBlock(); return { error: 'offline' }; }
+  try {
+    let res;
+    if (op === 'insert' && payload && payload[0] && payload[0].id) {
+      res = await sb.from(table).upsert(payload, { onConflict: 'id' }).select();
+    } else if (op === 'insert') {
+      res = await sb.from(table).insert(payload).select();
+    } else if (op === 'upsert') {
+      res = await sb.from(table).upsert(payload, match?.onConflict ? { onConflict: match.onConflict } : undefined).select();
+    } else if (op === 'update') {
+      let q = sb.from(table).update(payload);
+      (match?.eq || []).forEach(([k, v]) => q = q.eq(k, v));
+      res = await q.select();
+    } else if (op === 'delete') {
+      let q = sb.from(table).delete();
+      (match?.eq || []).forEach(([k, v]) => q = q.eq(k, v));
+      res = await q;
     }
-    updateOfflineBadge();
-  } catch(e) { isOnline = false; updateOfflineBadge(); }
-}, 90000);
+    if (!res || res.error) throw (res && res.error) || new Error('write returned no result');
+    return res;
+  } catch (e) {
+    console.error('sbWrite failed:', table, op, e.message);
+    showOfflineBlock();
+    return { error: e.message || 'write-failed' };
+  }
+}
 
 const BRANCHES = {
   MULTAN: { id:'MULTAN', name:'Multan', address:'Chowk Shah Abbas Soraj Kund Road, Near Jamia Rahimia, Pir Colony No. 1, Multan', phone:'923256032424',
@@ -1680,25 +1560,17 @@ async function doLogin() {
   if (!name) { showLoginErr('Enter your name'); return; }
   if (!pin)  { showLoginErr('Enter your PIN');  return; }
 
+  await checkConnectivity();
+  if (!isOnline || !sb) {
+    showLoginErr('⚠️ No internet connection. Please check your connection and try again.');
+    return;
+  }
+
   let staffRecord = null;
-
-  if (isOnline && sb) {
-    try {
-      const { data } = await sb.from('staff').select('*').eq('name', name).eq('pin', pin).eq('active', true).single();
-      if (data) {
-        staffRecord = data;
-        const { data: allStaff } = await sb.from('staff').select('*').eq('active', true);
-        if (allStaff) localStorage.setItem(STAFF_CACHE_KEY, JSON.stringify(allStaff));
-      }
-    } catch(e) {}
-  }
-
-  if (!staffRecord) {
-    try {
-      const cached = JSON.parse(localStorage.getItem(STAFF_CACHE_KEY) || '[]');
-      staffRecord = cached.find(s => s.name === name && s.pin === pin && s.active);
-    } catch(e) {}
-  }
+  try {
+    const { data } = await sb.from('staff').select('*').eq('name', name).eq('pin', pin).eq('active', true).single();
+    if (data) staffRecord = data;
+  } catch(e) {}
 
   if (!staffRecord) { showLoginErr('Wrong name or PIN. Try again.'); return; }
 
@@ -1808,30 +1680,15 @@ async function doLogout() {
 
   await saveShiftReport();
 
-  // Give queued offline writes a few seconds to sync before reloading —
-  // a device that never syncs means a DIFFERENT till won't see this
-  // till's edits until it comes back online.
-  if (isOnline) {
-    const start = Date.now();
-    while (getQueue().length > 0 && Date.now() - start < 4000) {
-      await flushOfflineQueue();
-      await new Promise(r => setTimeout(r, 400));
-    }
-  }
-  const stillPending = getQueue().length;
-  if (stillPending > 0) {
-    showToast('⚠️ ' + stillPending + ' change(s) not yet synced — saved on THIS device, will sync automatically once online.', 'error');
-  }
-
   const perms = currentStaffPermissions || {};
   const canPrintLogout = currentStaffRole === 'Admin' || currentStaffRole === 'Manager' || perms.print_logout !== false;
   const shouldPrint = canPrintLogout && confirm('Print closing report before logging out?');
   if (shouldPrint) {
     await renderClosingReport();
     printClosingReport();
-    setTimeout(() => location.reload(), stillPending > 0 ? 4500 : 2500);
+    setTimeout(() => location.reload(), 2500);
   } else {
-    setTimeout(() => location.reload(), stillPending > 0 ? 2000 : 0);
+    setTimeout(() => location.reload(), 0);
   }
   // ✅ No localStorage.clear() — data stays, next login restores everything from Supabase
 }
@@ -1930,12 +1787,12 @@ async function deductInventoryForSale(sale, bizdayOverride) {
 
 async function sbInventoryOp(opType, data) {
   if (!sb) return;
-  if (!isOnline) { queueOfflineAction('inventory_ops', opType, data, null); return; }
+  if (!isOnline) { showOfflineBlock(); return; }
   try {
     await _runInventoryOp(opType, data);
   } catch(e) {
-    console.warn('Inventory op failed — queued offline:', opType, e.message);
-    queueOfflineAction('inventory_ops', opType, data, null);
+    console.error('Inventory op failed:', opType, e.message);
+    showToast('⚠️ Inventory update failed — check your connection', 'error');
   }
 }
 
@@ -2063,9 +1920,14 @@ function startLiveReload() {
   }
 
   // Safety-net poll in case a realtime event is ever missed (brief network
-  // drop, etc). Not the primary sync mechanism anymore — just a backstop.
-  liveReloadInterval = setInterval(() => {
-    if (document.getElementById('view-tables').classList.contains('active')) renderTableMap();
+  // drop, phone locked, tab backgrounded, etc). Re-fetches active_tables from
+  // the cloud instead of just redrawing local memory, so a missed realtime
+  // event self-heals within 5 minutes instead of staying wrong indefinitely.
+  liveReloadInterval = setInterval(async () => {
+    if (document.getElementById('view-tables').classList.contains('active')) {
+      await _loadActiveTables();
+      renderTableMap();
+    }
     if (document.getElementById('view-cash').classList.contains('active')) renderCashView();
     if (document.getElementById('view-delivery').classList.contains('active')) renderDeliveryView();
   }, 300000); // 5 minutes, not 60s
@@ -2082,32 +1944,8 @@ function handleActiveTableRealtime(payload) {
     document.getElementById('view-order').classList.contains('active') &&
     currentOrder.table === tname;
 
-  const _tombstones = _getRemovedTombstones();
-  if (payload.eventType !== 'DELETE' && _tombstones[tname]) {
-    const incomingUpdatedAt = payload.new?.updated_at ? new Date(payload.new.updated_at).getTime() : 0;
-    if (incomingUpdatedAt && incomingUpdatedAt > _tombstones[tname]) {
-      // A DIFFERENT till opened a genuinely new order on this table AFTER
-      // we cleared it locally — accept it instead of nuking their order.
-      console.log('✅ Newer order on tombstoned table — accepting, not deleting:', tname);
-      _clearTombstone(tname);
-      if (!isEditingThisTable) tableOrders[tname] = payload.new.order_data;
-      if (document.getElementById('view-tables').classList.contains('active')) renderTableMap();
-      return;
-    }
-    console.log('🚫 Ignoring stale active_tables write for tombstoned table:', tname);
-    if (sb) {
-      sb.from('active_tables').delete()
-        .eq('branch', activeBranch).eq('table_name', tname)
-        .catch(() => {});
-    }
-    return;
-  }
-
   if (payload.eventType === 'DELETE') {
     if (isEditingThisTable) {
-      // Another till just paid/cleared THIS table while we were editing it.
-      // Lock this order from being saved further — resurrecting a paid
-      // table is worse than losing whatever we were mid-typing.
       currentOrder._remotelyCleared = true;
       showToast('⚠️ This table was just paid/cleared on another till — your screen has been reset.', 'error');
       delete tableOrders[tname];
@@ -2116,7 +1954,6 @@ function handleActiveTableRealtime(payload) {
     } else {
       delete tableOrders[tname];
     }
-    _clearTombstone(tname);
   } else {
     if (!isEditingThisTable) tableOrders[tname] = payload.new.order_data;
   }
@@ -2294,18 +2131,13 @@ async function openStaffManager() {
 }
 
 async function renderStaffTable() {
+  if (!isOnline || !sb) { showToast('No internet connection — cannot load staff list', 'error'); return; }
   let staffList = null;
-  if (isOnline && sb) {
-    try {
-      const { data, error } = await sb.from('staff').select('*').order('name');
-      if (!error && data) { staffList = data; localStorage.setItem(STAFF_CACHE_KEY, JSON.stringify(data)); }
-    } catch(e) {}
-  }
-  if (!staffList) {
-    try { staffList = JSON.parse(localStorage.getItem(STAFF_CACHE_KEY) || '[]'); } catch(e) { staffList = []; }
-    if (!staffList.length) { showToast('Offline — no cached staff list available', 'error'); return; }
-    showToast('📡 Offline — showing cached staff list. Edits need a connection.', 'error');
-  }
+  try {
+    const { data, error } = await sb.from('staff').select('*').order('name');
+    if (!error && data) staffList = data;
+  } catch(e) {}
+  if (!staffList) { showToast('Could not load staff list — check your connection', 'error'); return; }
 
   document.getElementById('staff-tbody').innerHTML = staffList.map(s => {
     const p = s.permissions || {};
@@ -2406,69 +2238,59 @@ let _paidIdsCacheTime = 0;
 // ════════════════════════════════════════════════════════
  
 async function _saveActiveTable(tname, orderData) {
-  if (orderData) { tableOrders[tname] = orderData; _clearTombstone(tname); }
-  else { delete tableOrders[tname]; _markTableRemoved(tname); }
-  persistLocalTables(); // survives refresh even if the write below never fires
-
-  if (!sb) return;
+  if (!sb) { showOfflineBlock(); return false; }
   try {
+    let res;
     if (!orderData) {
-      await sbWrite('active_tables', 'delete', null, { eq:[['branch',activeBranch],['table_name',tname]] });
+      res = await sbWrite('active_tables', 'delete', null, { eq:[['branch',activeBranch],['table_name',tname]] });
     } else {
       const safe = JSON.parse(JSON.stringify(orderData));
-      await sbWrite('active_tables', 'upsert',
+      res = await sbWrite('active_tables', 'upsert',
         [{ branch: activeBranch, table_name: tname, order_data: safe, updated_at: new Date().toISOString() }],
         { onConflict: 'branch,table_name' });
     }
-  } catch(e) { console.warn('_saveActiveTable:', e.message); }
-}
- 
-async function _loadActiveTables() {
-  // Seed from the local safety-net cache FIRST — guarantees anything opened
-  // or edited while offline (not yet synced) survives a refresh, even if
-  // the cloud fetch below fails or is stale.
-  const localTables = loadLocalTables();
-  const tombstones = _getRemovedTombstones();
-  for (const tname in localTables) {
-    if (tombstones[tname]) continue; // removed locally (e.g. paid offline) — don't resurrect
-    if (!tableOrders[tname]) tableOrders[tname] = localTables[tname];
+    if (res && res.error) {
+      showToast('⚠️ Could not save — check your internet. Change NOT saved.', 'error');
+      return false;
+    }
+    if (orderData) tableOrders[tname] = orderData;
+    else delete tableOrders[tname];
+    return true;
+  } catch(e) {
+    console.error('_saveActiveTable failed:', e.message);
+    showOfflineBlock();
+    return false;
   }
+}
 
-  if (!sb) return;
+async function _loadActiveTables() {
+  if (!sb) { showOfflineBlock(); return; }
   try {
     const { data, error } = await sb.from('active_tables')
       .select('*').eq('branch', activeBranch);
     if (error) {
       console.error('active_tables load failed:', error.message);
-      showToast('⚠️ Could not reach cloud — showing locally saved tables only', 'error');
+      showOfflineBlock();
       return;
     }
+
+    tableOrders = {}; // cloud is the ONLY source of truth — nothing local seeded in
+
     if (!data || !data.length) return;
 
-    // Get today's paid transactions
     const { data: paidTx } = await sb.from('shift_transactions')
       .select('kitchen_order_id, table_loc, created_at')
       .eq('date', todayKey())
       .eq('branch', activeBranch);
 
     const paidKitchenIds = new Set();
-    // Map of table_loc → latest paid time (to compare against order start time)
     const paidTableTimes = {};
-
     (paidTx || []).forEach(t => {
       if (t.kitchen_order_id) paidKitchenIds.add(t.kitchen_order_id);
       if (t.table_loc) {
-        const variants = [
-          t.table_loc,
-          t.table_loc.replace(/ /g, '-'),
-          t.table_loc.replace(/-/g, ' ')
-        ];
+        const variants = [t.table_loc, t.table_loc.replace(/ /g,'-'), t.table_loc.replace(/-/g,' ')];
         const paidAt = new Date(t.created_at).getTime();
-        variants.forEach(v => {
-          if (!paidTableTimes[v] || paidAt > paidTableTimes[v]) {
-            paidTableTimes[v] = paidAt;
-          }
-        });
+        variants.forEach(v => { if (!paidTableTimes[v] || paidAt > paidTableTimes[v]) paidTableTimes[v] = paidAt; });
       }
     });
 
@@ -2478,116 +2300,43 @@ async function _loadActiveTables() {
     for (const row of data) {
       const tname = row.table_name;
       const order = row.order_data;
-
       if (!tname || !order) { staleRows.push(tname); continue; }
-      if (tombstones[tname]) continue; // locally marked removed — stale cloud row, ignore
-      if (tableOrders[tname]) continue;
 
-      // Check 1: kitchen_order_id was explicitly paid — always skip
-      if (order.id && paidKitchenIds.has(order.id)) {
-        console.log('🗑️ Skipping paid order (kitchen_id match):', tname, order.id);
-        staleRows.push(tname); continue;
-      }
+      if (order.id && paidKitchenIds.has(order.id)) { staleRows.push(tname); continue; }
 
-      // Check 2: table location was paid — BUT only if the payment
-      // happened AFTER this order started (not a previous order on same slot)
       if (!order.fromWeb && !order.id) {
         const orderStartTime = order.startTime || 0;
         const lastPaidAt = paidTableTimes[tname]
           || paidTableTimes[tname.replace(/-/g,' ')]
           || paidTableTimes[tname.replace(/ /g,'-')]
           || 0;
-
-        if (lastPaidAt > orderStartTime) {
-          console.log('🗑️ Skipping paid table (time match):', tname, 'paid at', lastPaidAt, 'order started', orderStartTime);
-          staleRows.push(tname); continue;
-        }
+        if (lastPaidAt > orderStartTime) { staleRows.push(tname); continue; }
       }
 
       tableOrders[tname] = order;
       restored++;
     }
 
-    // Clean up stale rows
-    if (staleRows.length && sb) {
-      staleRows.forEach(tname => {
-        sb.from('active_tables').delete()
-          .eq('branch', activeBranch).eq('table_name', tname)
-          .catch(() => {});
-      });
+    if (staleRows.length) {
+      for (const tname of staleRows) {
+        try {
+          const { error } = await sb.from('active_tables').delete()
+            .eq('branch', activeBranch).eq('table_name', tname);
+          if (error) console.error('Stale table cleanup failed for', tname, error.message);
+        } catch (e) {
+          console.error('Stale table cleanup failed for', tname, e.message);
+        }
+      }
     }
 
     if (restored) console.log('✅ Restored', restored, 'active tables from cloud');
-  } catch(e) { console.warn('_loadActiveTables:', e.message); }
-}
-
-// Rebuilds any table missing from active_tables using kitchen_orders as the
-// durable source of truth — kitchen_orders inserts are awaited, so anything
-// that made it to "Sent to Kitchen" survives a crash/power-cut even if the
-// active_tables cursor or localStorage was lost.
-async function _recoverOrdersFromKitchen() {
-  if (!sb) return;
-  try {
-    const { data: openKOs } = await sb.from('kitchen_orders')
-      .select('id, type, location, items, subtotal, delivery_fee, customer_name, phone, created_at')
-      .eq('branch', activeBranch)
-      .in('status', ['WAITING', 'PREPARING', 'READY']);
-    if (!openKOs || !openKOs.length) return;
-
-    // Exclude ones already paid/settled (recorded in shift_transactions today)
-    const { data: paidTx } = await sb.from('shift_transactions')
-      .select('kitchen_order_id').eq('branch', activeBranch).eq('date', todayKey());
-    const paidIds = new Set((paidTx || []).map(t => t.kitchen_order_id).filter(Boolean));
-
-    let recovered = 0;
-    for (const ko of openKOs) {
-      if (paidIds.has(ko.id)) continue;
-
-      // Already present in tableOrders (by kitchen_order id)? skip.
-      const already = Object.values(tableOrders).some(o => o.id === ko.id);
-      if (already) continue;
-
-      const isDelivery = ko.type === 'Delivery';
-      let tname = ko.location;
-      if (!isDelivery) {
-        // location is stored as "T 1" style — convert back to "T-1" table id
-        const candidate = ALL_TABLE_IDS.find(t => t.replace('-', ' ') === tname || t === tname);
-        tname = candidate || tname;
-      } else {
-        // find a free DEL- slot for this recovered delivery order
-        const freeDel = TABLES['Delivery'].find(t => !tableOrders[t]);
-        tname = freeDel || ('DEL-' + ko.id.slice(0,4));
-      }
-      if (tableOrders[tname]) continue; // slot already occupied by something else
-
-      const items = parseItemsFromText(ko.items, ko.subtotal, !isDelivery && ko.type === 'Dine-In');
-      tableOrders[tname] = {
-        table: tname,
-        type: ko.type,
-        items,
-        id: ko.id,
-        startTime: new Date(ko.created_at).getTime(),
-        sentToKitchen: true,
-        customerName: ko.customer_name || '',
-        customerPhone: ko.phone || '',
-        deliveryAddress: isDelivery ? (ko.location || '') : '',
-        deliveryCharge: ko.delivery_fee || 0,
-        fromWeb: false, confirmed: true
-      };
-      _clearTombstone(tname);
-      _saveActiveTable(tname, tableOrders[tname]); // re-sync active_tables cursor
-      recovered++;
-    }
-
-    if (recovered) {
-      persistLocalTables();
-      showToast('♻️ Recovered ' + recovered + ' open order(s) after restart', 'success');
-      renderTableMap();
-    }
   } catch(e) {
-    console.warn('_recoverOrdersFromKitchen failed:', e.message);
+    console.error('_loadActiveTables failed:', e.message);
+    showOfflineBlock();
   }
 }
+
+
 // ================================================================================
 
 function showTableConflictModal(newOrderTableId, newOrder, existingOrder) {
@@ -2879,7 +2628,11 @@ async function backToTables() {
         returnReason: reason.trim()
       });
       const tbl = currentOrder.table;
-      if (tbl) { delete tableOrders[tbl]; _saveActiveTable(tbl, null); }
+      if (tbl) {
+        delete tableOrders[tbl];
+        const _clearedOk = await _saveActiveTable(tbl, null);
+        if (!_clearedOk) showToast('⚠️ Could not clear table in cloud — it may reappear. Check your internet.', 'error');
+      }
       if (currentOrder.id && sb) {
         try {
           await sb.from('kitchen_orders').update({
@@ -3100,16 +2853,10 @@ scEnabled = type==='Dine-In' ? (currentOrder.scEnabled !== undefined ? currentOr
   document.getElementById('delivery-charge').value = currentOrder.deliveryCharge !== undefined ? currentOrder.deliveryCharge : 0;
   populateRiderDropdown();
 document.getElementById('delivery-rider').value = currentOrder.rider || '';
-// Show correct payment button based on type
-const isTakeaway = type === 'Takeaway';
-document.getElementById('takeaway-paid-btn-wrap').style.display = isTakeaway ? 'block' : 'none';
-document.getElementById('collect-btn').style.display = isTakeaway ? 'none' : 'block';
-
-// If already paid, show hand over button instead
-if (currentOrder.paid && isTakeaway) {
-  document.getElementById('takeaway-paid-btn-wrap').innerHTML =
-    '<button class="oa-btn" style="width:100%;padding:13px;font-size:14px;background:var(--surface2);color:var(--green);border:2px solid var(--green);" onclick="handOverTakeaway()">✅ Handed Over — Clear Table</button>';
-}
+// Takeaway now uses the same Collect & Clear pay modal as Dine-In —
+// no token prompt(), no separate "Handed Over" step.
+document.getElementById('takeaway-paid-btn-wrap').style.display = 'none';
+document.getElementById('collect-btn').style.display = 'block';
   // Discount
   document.getElementById('disc-amount').value = currentOrder.discAmount || 0;
   discType = currentOrder.discType || 'flat';
@@ -3577,14 +3324,17 @@ async function requestItemAdjustment(idx, action, qtyDelta) {
     deliveryAddress: '', deliveryCharge: 0, sc: 0, disc: 0, scPct: 0, discType: 'flat', discAmount: 0,
     cashReceived: 0, splitCash: 0, splitCard: 0, returnReason: reason.trim()
   };
-  completedOrders.push(adjLog);
-  await sbWrite('shift_transactions', 'insert', [{
+  const _adjWriteRes = await sbWrite('shift_transactions', 'insert', [{
     id: _adjId, branch: activeBranch, date: todayKey(), bill_no: 'ADJ', type: currentOrder.type,
     table_loc: currentOrder.table || '', items_text: removedQty + 'x ' + item.name,
     subtotal: removedValue, total: -removedValue, method: 'item-void', staff: currentStaff,
     return_reason: reason.trim(), kitchen_order_id: currentOrder.id || null
   }]);
-
+  if (_adjWriteRes && _adjWriteRes.error) {
+    showToast('⚠️ Could not save this adjustment — check your internet. Item NOT removed/reduced.', 'error');
+    return;
+  }
+  completedOrders.push(adjLog);
   applyItemAdjustment(idx, action, qtyDelta);
   showToast('Removed — reason logged: ' + reason.trim(), 'error');
 }
@@ -3630,8 +3380,6 @@ async function returnItem(idx) {
   const reason = prompt('Return reason for "' + item.name + '"?\n(e.g. Wrong item, Customer changed mind, Quality issue)');
   if (reason === null) return; // cancelled
   if (!reason.trim()) { showToast('Return reason is required', 'error'); return; }
-  currentOrder.items[idx].returned = true;
-  currentOrder.items[idx].returnReason = reason || 'No reason given';
   // Log the return
   const _returnId = genId();
   const returnLog = {
@@ -3649,15 +3397,20 @@ async function returnItem(idx) {
     cashReceived: 0, splitCash: 0, splitCard: 0,
     returnReason: reason || 'No reason given'
   };
-  completedOrders.push(returnLog);
-  await sbWrite('shift_transactions', 'insert', [{
+  const _returnWriteRes = await sbWrite('shift_transactions', 'insert', [{
     id: _returnId, branch: activeBranch, date: todayKey(), bill_no: 'RTN', type: currentOrder.type,
     table_loc: currentOrder.table || '', items_text: item.qty + 'x ' + item.name,
     subtotal: item.price * item.qty, total: -(item.price * item.qty),
     method: 'return', staff: currentStaff, return_reason: reason || 'No reason given',
     kitchen_order_id: currentOrder.id || null
   }]);
-  saveTodaySales();
+  if (_returnWriteRes && _returnWriteRes.error) {
+    showToast('⚠️ Could not save the return — check your internet. Item NOT marked as returned.', 'error');
+    return;
+  }
+  currentOrder.items[idx].returned = true;
+  currentOrder.items[idx].returnReason = reason || 'No reason given';
+  completedOrders.push(returnLog);
   saveTableOrder();
   renderOrderItems();
   showToast('↩ ' + item.name + ' marked as returned', 'success');
@@ -3722,15 +3475,7 @@ async function voidCurrentOrder() {
   
   // Save to Supabase shift_transactions
   const _voidId = genId();
-  completedOrders.push({
-    id: _voidId, billNo: 'VOID', table: currentOrder.table, type: currentOrder.type,
-    items: [...currentOrder.items], total: -food, method: 'void',
-    time: new Date(), staff: currentStaff, branch: activeBranch,
-    customerName: currentOrder.customerName || '', customerPhone: currentOrder.customerPhone || '',
-    deliveryAddress: '', deliveryCharge: 0, sc: 0, disc: 0, scPct: 0, discType: 'flat', discAmount: 0,
-    cashReceived: 0, splitCash: 0, splitCard: 0, returnReason: reason
-  });
-  await sbWrite('shift_transactions', 'insert', [{
+  const _voidWriteRes = await sbWrite('shift_transactions', 'insert', [{
     id: _voidId,
     branch: activeBranch,
     date: todayKey(),
@@ -3747,6 +3492,18 @@ async function voidCurrentOrder() {
     return_reason: reason,
     kitchen_order_id: idToDelete || null
   }]);
+  if (_voidWriteRes && _voidWriteRes.error) {
+    showToast('⚠️ Could not save the void — check your internet. Order NOT voided, still open.', 'error');
+    return;
+  }
+  completedOrders.push({
+    id: _voidId, billNo: 'VOID', table: currentOrder.table, type: currentOrder.type,
+    items: [...currentOrder.items], total: -food, method: 'void',
+    time: new Date(), staff: currentStaff, branch: activeBranch,
+    customerName: currentOrder.customerName || '', customerPhone: currentOrder.customerPhone || '',
+    deliveryAddress: '', deliveryCharge: 0, sc: 0, disc: 0, scPct: 0, discType: 'flat', discAmount: 0,
+    cashReceived: 0, splitCash: 0, splitCard: 0, returnReason: reason
+  });
 
   if (tableToDelete) delete tableOrders[tableToDelete];
   if (tableToDelete) await _saveActiveTable(tableToDelete, null);
@@ -3907,7 +3664,7 @@ function updateSplitTotal() {
   document.getElementById('split-subtotal').textContent = 'Rs ' + total;
 }
 
-function applySplitByItems() {
+async function applySplitByItems() {
   var selected = [];
   var remaining = [];
   currentOrder.items.forEach(function(item, idx) {
@@ -3942,7 +3699,7 @@ function applySplitByItems() {
   var _splitItemsSaleId = genId();
   var splitSale = {
     id: _splitItemsSaleId,
-    billNo: 'SPL', table: currentOrder.table, type: currentOrder.type,
+    billNo: DEVICE_CODE + '-' + String(billCounter).padStart(3,'0'), table: currentOrder.table, type: currentOrder.type,
     items: selected, total: splitTotal, method: splitItemMethod,
     time: new Date(), staff: currentStaff, branch: activeBranch,
     customerName: currentOrder.customerName || '',
@@ -3952,10 +3709,7 @@ function applySplitByItems() {
     kitchenOrderId: currentOrder.id || null,
     splitCash: 0, splitCard: 0
   };
-  splitSale.billNo = DEVICE_CODE + '-' + String(billCounter).padStart(3,'0');
-  completedOrders.push(splitSale);
-  deductInventoryForSale(splitSale);
-  sbWrite('shift_transactions', 'insert', [{
+  const _splitItemsWriteRes = await sbWrite('shift_transactions', 'insert', [{
     id: _splitItemsSaleId, branch: activeBranch, date: todayKey(),
     bill_no: splitSale.billNo, type: currentOrder.type,
     table_loc: currentOrder.table || '',
@@ -3969,6 +3723,12 @@ function applySplitByItems() {
     customer_phone: currentOrder.customerPhone || '',
     delivery_address: '', kitchen_order_id: currentOrder.id || null
   }]);
+  if (_splitItemsWriteRes && _splitItemsWriteRes.error) {
+    showToast('⚠️ Could not save this split bill — check your internet. Nothing was recorded.', 'error');
+    return;
+  }
+  completedOrders.push(splitSale);
+  deductInventoryForSale(splitSale);
   if (splitItemMethod === 'cash') cashInHand += splitTotal;
   salesTotal += splitTotal;
   billCounter++;
@@ -3990,7 +3750,7 @@ function applySplitByItems() {
   showToast('Split: Rs '+splitTotal+' (SC Rs '+splitSC+', Disc Rs '+splitDisc+')', 'success');
 }
 
-function applySplitByAmount() {
+async function applySplitByAmount() { // <-- Added async here
   var total = parseInt(document.getElementById('split-order-total').textContent.replace('Rs ','')) || 0;
   var perPerson = Math.ceil(total / splitPeople);
   var method = splitAmtMethod;
@@ -4022,8 +3782,7 @@ function applySplitByAmount() {
       splitCash: 0, splitCard: 0
     };
 
-    completedOrders.push(splitSale);
-    sbWrite('shift_transactions', 'insert', [{
+    const _splitAmtWriteRes = await sbWrite('shift_transactions', 'insert', [{
       id: _splitAmtSaleId, branch: activeBranch, date: todayKey(),
       bill_no: billNo, type: currentOrder.type,
       table_loc: currentOrder.table || '',
@@ -4036,6 +3795,11 @@ function applySplitByAmount() {
       customer_phone: currentOrder.customerPhone || '',
       delivery_address: '', kitchen_order_id: currentOrder.id || null
     }]);
+    if (_splitAmtWriteRes && _splitAmtWriteRes.error) {
+      showToast('⚠️ Could not save split payment ' + i + ' of ' + splitPeople + ' — check your internet. Stopping; remaining people not charged.', 'error');
+      return;
+    }
+    completedOrders.push(splitSale);
     if (thisMethod === 'cash') cashInHand += thisAmount;
     salesTotal += thisAmount;
     billCounter++;
@@ -4046,16 +3810,36 @@ function applySplitByAmount() {
   }
 
   document.getElementById('bar-cash').textContent = 'Rs ' + cashInHand;
-  document.getElementById('bar-billno').textContent = String(billCounter).padStart(3,'0');
+  document.getElementById('bar-billno').textContent = String(billCounter).padStart(3, '0');
   saveTodaySales();
 
+  const orderIdToUpdate = currentOrder.id;
   const _splitTable = currentOrder.table;
-  if (_splitTable) { _saveActiveTable(_splitTable, null); }
+
+  // --- DATABASE NETWORK OPERATIONS FIRST ---
+  // Clear the table in the cloud before resetting the local screen — if this
+  // fails, the table must stay visible/open so it doesn't silently reappear
+  // later while looking "clean" on this device right now.
+  let _splitClearOk = true;
+  if (_splitTable) {
+    _splitClearOk = await _saveActiveTable(_splitTable, null);
+  }
+  if (orderIdToUpdate) {
+    await sbWrite('kitchen_orders', 'update',
+      { status: 'PAID', paid_at: new Date().toISOString() },
+      { eq: [['id', orderIdToUpdate]] });
+  }
+
+  if (!_splitClearOk) {
+    showToast('⚠️ Bills recorded, but could not clear the table — check your internet and clear it manually.', 'error');
+  }
+
+  // --- UI STATE UPDATE ---
   currentOrder = { table: null, type: 'Dine-In', items: [], id: null };
   switchView('tables');
   renderTableMap();
-
   closeModal('split-modal');
+
   showToast('Split into ' + splitPeople + ' bills — recorded ✅', 'success');
 }
 
@@ -4234,20 +4018,7 @@ async function _markTakeawayPaidInner() {
     sc: 0, disc, scPct: 0, discType, discAmount: discAmt,
     cashReceived: 0, splitCash: 0, splitCard: 0
   };
-  // Mark as paid in state
-  currentOrder.paid = true;
-  currentOrder.payMethod = payM;
-  currentOrder.tokenNo = tokenNo;
-  if (tableOrders[currentOrder.table]) {
-  tableOrders[currentOrder.table].paid = true;
-  tableOrders[currentOrder.table].payMethod = payM;
-  tableOrders[currentOrder.table].tokenNo = tokenNo;
-  _saveActiveTable(currentOrder.table, tableOrders[currentOrder.table]); // ← this line is missing
-}
-  completedOrders.push(sale);
-  saveTodaySales();
-  deductInventoryForSale(sale);
-  await sbWrite('shift_transactions', 'insert', [{
+  const _twWriteRes = await sbWrite('shift_transactions', 'insert', [{
     id: _twSaleId,
     branch: activeBranch, date: todayKey(),
     bill_no: sale.billNo, type: sale.type,
@@ -4264,6 +4035,22 @@ async function _markTakeawayPaidInner() {
     delivery_address: '',
     kitchen_order_id: currentOrder.id || null
   }]);
+  if (_twWriteRes && _twWriteRes.error) {
+    showToast('⚠️ Could not save this payment — check your internet. Payment NOT recorded, please try again.', 'error');
+    return;
+  }
+  // Mark as paid in state — only after the DB confirms the sale
+  currentOrder.paid = true;
+  currentOrder.payMethod = payM;
+  currentOrder.tokenNo = tokenNo;
+  if (tableOrders[currentOrder.table]) {
+    tableOrders[currentOrder.table].paid = true;
+    tableOrders[currentOrder.table].payMethod = payM;
+    tableOrders[currentOrder.table].tokenNo = tokenNo;
+    await _saveActiveTable(currentOrder.table, tableOrders[currentOrder.table]);
+  }
+  completedOrders.push(sale);
+  deductInventoryForSale(sale);
   // 🆕 Invalidate paid IDs cache so next poll sees fresh data
   _paidIdsCacheTime = 0;
   if (currentOrder.id) paidOrderIds.add(currentOrder.id);
@@ -4414,10 +4201,7 @@ async function completePayment() {
       riderTag: riderTag
     };
  
-    completedOrders.push(sale);
-    saveTodaySales(); // persist locally right away — survives a refresh even offline
-    deductInventoryForSale(sale);
-    await sbWrite('shift_transactions', 'insert', [{
+    const _saleWriteRes = await sbWrite('shift_transactions', 'insert', [{
       id: saleId,
       branch: activeBranch, date: todayKey(),
       bill_no: sale.billNo, type: sale.type,
@@ -4437,6 +4221,13 @@ items_text: sale.items.map(i => `${i.qty}x ${i.name}`).join(', ') + sale.riderTa
       kitchen_order_id: currentOrder.id || null
     }]);
  
+    if (_saleWriteRes && _saleWriteRes.error) {
+      showToast('⚠️ Could not save this sale — check your internet. Payment NOT recorded, please try again.', 'error');
+      throw new Error('validation');
+    }
+    completedOrders.push(sale);
+    deductInventoryForSale(sale);
+
     _paidIdsCacheTime = 0;
     const cashPart = payMethod === 'cash' ? grand : payMethod === 'split' ? sale.splitCash : 0;
     cashInHand += cashPart;
@@ -4448,13 +4239,21 @@ items_text: sale.items.map(i => `${i.qty}x ${i.name}`).join(', ') + sale.riderTa
     if (!currentOrder.id && !currentOrder.sentToKitchen) await sendToKitchen();
     if (currentOrder.id) paidOrderIds.add(currentOrder.id);
  
+    // Mark the kitchen_orders row settled — same pattern updateDeliveryStatus
+    // already uses for 'OUT' — so it can never be resurrected on a later login.
+    if (currentOrder.id) {
+      await sbWrite('kitchen_orders', 'update',
+        { status: 'PAID', paid_at: new Date().toISOString() },
+        { eq: [['id', currentOrder.id]] });
+    }
+
     // Routed through _saveActiveTable — queued + tombstoned if offline,
     // instead of silently failing and letting the table reappear "open".
     const _paidTable = currentOrder.table;
     if (_paidTable) { await _saveActiveTable(_paidTable, null); }
  
     closeModal('pay-modal');
-    printReceipt(sale);
+    if (sale.type === 'Takeaway') printTakeawaySlip(sale); else printReceipt(sale);
     currentOrder = { table: null, type: 'Dine-In', items: [], id: null };
     switchView('tables');
     renderTableMap();
@@ -4738,24 +4537,12 @@ async function updateDeliveryStatus(orderId, status, knownOrder) {
       paymentMethod = promptPaymentMethod('How did customer pay?');
       if (paymentMethod === null) { showToast('Cancelled — order not marked delivered', 'error'); return; }
     }
-    const updateData = { status };
-    await sbWrite('kitchen_orders', 'update', updateData, { eq:[['id', orderId]] });
-    showToast(`Status → ${status} [${paymentMethod.toUpperCase()}]`, 'success');
 
+    // For OUT/PAID: record the sale FIRST. Only mark the kitchen order
+    // settled and clear it off the table map once the sale write actually
+    // succeeds — otherwise a failed/offline write can leave the order
+    // showing "delivered" with no money ever recorded against it.
     if (status === 'OUT' || status === 'PAID') {
-      voidedOrderIds.add(orderId);
-      for (const tname in tableOrders) {
-  if (tableOrders[tname].id === orderId || tableOrders[tname].webOrderId === orderId) {
-    await _saveActiveTable(tname, null);
-    delete tableOrders[tname];
-    break;
-  }
-}
-      renderTableMap();
-
-      // Save to report — try a fresh fetch first, but fall back to the
-      // order data the delivery card already had if that fails (offline).
-      // This guarantees the sale is never silently dropped.
       let ko = null;
       if (sb && isOnline) {
         try {
@@ -4765,56 +4552,82 @@ async function updateDeliveryStatus(orderId, status, knownOrder) {
         } catch(e) { console.warn('Live fetch failed, using cached order:', e.message); }
       }
       if (!ko) ko = knownOrder;
-      {
-          if (ko) {
-            const shopTotal = ko.subtotal || 0;
-              const delFee = ko.delivery_fee || 0;
-              const billNo = DEVICE_CODE + '-' + String(billCounter).padStart(3, '0');
-              const alreadySaved = completedOrders.find(o => o.kitchenOrderId === orderId);
-              if (!alreadySaved) {
-                const _delSaleId = genId();
-                const sale = {
-                  id: _delSaleId,
-                  billNo, table: ko.location, type: 'Delivery',
-                  items: [], total: shopTotal, method: paymentMethod,
-                time: new Date(), staff: currentStaff, branch: activeBranch,
-                customerName: ko.customer_name || '',
-                customerPhone: ko.phone || '',
-                deliveryAddress: ko.location || '',
-                deliveryCharge: ko.delivery_fee || 0,
-sc: 0, disc: ko.discount || 0, scPct: 0, discType: 'flat', discAmount: ko.discount || 0,
-                splitCash: 0, splitCard: 0,
-                kitchenOrderId: orderId
-              };
-              completedOrders.push(sale);
-              await sbWrite('shift_transactions', 'insert', [{
-                id: _delSaleId, branch: activeBranch, date: todayKey(),
-                bill_no: billNo, type: 'Delivery',
-                table_loc: ko.location || '',
-                items_text: ko.items || '',
-                subtotal: ko.subtotal || 0,
-                sc: 0, sc_pct: 0,
-                discount: ko.discount || tableOrders[ko.location]?.discAmount || 0,
-                delivery_charge: delFee,
-                total: Math.max(0, shopTotal - (ko.discount || 0)), method: paymentMethod,
-                cash_received: 0, split_cash: 0, split_card: 0,
-                staff: currentStaff,
-                customer_name: ko.customer_name || '',
-                customer_phone: ko.phone || '',
-                delivery_address: ko.location || '',
-                kitchen_order_id: orderId
-              }]);
-              billCounter++;
-              
-              if (paymentMethod === 'cash') cashInHand += shopTotal;
-              document.getElementById('bar-cash').textContent = 'Rs ' + cashInHand;
-              document.getElementById('bar-billno').textContent = String(billCounter).padStart(3, '0');
-              saveTodaySales();
-            }
-          } else {
-            showToast('⚠️ Could not get order details — check Cash Drawer manually for this delivery', 'error');
-          }
+
+      if (!ko) {
+        showToast('⚠️ Could not get order details — status NOT changed, please retry.', 'error');
+        return;
       }
+
+      const shopTotal = ko.subtotal || 0;
+      const delFee = ko.delivery_fee || 0;
+      const alreadySaved = completedOrders.find(o => o.kitchenOrderId === orderId);
+
+      if (!alreadySaved) {
+        const billNo = DEVICE_CODE + '-' + String(billCounter).padStart(3, '0');
+        const _delSaleId = genId();
+        const sale = {
+          id: _delSaleId,
+          billNo, table: ko.location, type: 'Delivery',
+          items: [], total: shopTotal, method: paymentMethod,
+          time: new Date(), staff: currentStaff, branch: activeBranch,
+          customerName: ko.customer_name || '',
+          customerPhone: ko.phone || '',
+          deliveryAddress: ko.location || '',
+          deliveryCharge: ko.delivery_fee || 0,
+          sc: 0, disc: ko.discount || 0, scPct: 0, discType: 'flat', discAmount: ko.discount || 0,
+          splitCash: 0, splitCard: 0,
+          kitchenOrderId: orderId
+        };
+        const _delWriteRes = await sbWrite('shift_transactions', 'insert', [{
+          id: _delSaleId, branch: activeBranch, date: todayKey(),
+          bill_no: billNo, type: 'Delivery',
+          table_loc: ko.location || '',
+          items_text: ko.items || '',
+          subtotal: ko.subtotal || 0,
+          sc: 0, sc_pct: 0,
+          discount: ko.discount || tableOrders[ko.location]?.discAmount || 0,
+          delivery_charge: delFee,
+          total: Math.max(0, shopTotal - (ko.discount || 0)), method: paymentMethod,
+          cash_received: 0, split_cash: 0, split_card: 0,
+          staff: currentStaff,
+          customer_name: ko.customer_name || '',
+          customer_phone: ko.phone || '',
+          delivery_address: ko.location || '',
+          kitchen_order_id: orderId
+        }]);
+
+        // Sale write failed — stop here. Order stays open on the table map,
+        // status stays unchanged, nothing is silently lost.
+        if (_delWriteRes && _delWriteRes.error) {
+          showToast('⚠️ Could not save this delivery sale — check your internet. Status NOT changed, please retry.', 'error');
+          return;
+        }
+
+        completedOrders.push(sale);
+        billCounter++;
+        if (paymentMethod === 'cash') cashInHand += shopTotal;
+        document.getElementById('bar-cash').textContent = 'Rs ' + cashInHand;
+        document.getElementById('bar-billno').textContent = String(billCounter).padStart(3, '0');
+        saveTodaySales();
+      }
+    }
+
+    // Sale is safely recorded (or already had been) — now it's safe to mark
+    // the kitchen order settled and clear it off the table map.
+    const updateData = { status };
+    await sbWrite('kitchen_orders', 'update', updateData, { eq:[['id', orderId]] });
+    showToast(`Status → ${status} [${paymentMethod.toUpperCase()}]`, 'success');
+
+    if (status === 'OUT' || status === 'PAID') {
+      voidedOrderIds.add(orderId);
+      for (const tname in tableOrders) {
+        if (tableOrders[tname].id === orderId || tableOrders[tname].webOrderId === orderId) {
+          await _saveActiveTable(tname, null);
+          delete tableOrders[tname];
+          break;
+        }
+      }
+      renderTableMap();
     }
 
     setTimeout(renderDeliveryView, 800);
@@ -4923,13 +4736,17 @@ async function addCashIn() {
   if (!amt) return;
   const reason = prompt('Reason:') || 'Cash In';
   const _ciId = genId();
-  completedOrders.push({ id:_ciId, billNo:'CI', table:'', type:'Cash In', items:[{name:reason,price:amt,qty:1,note:''}], total:amt, method:'cash-in', time:new Date(), staff:currentStaff, branch:activeBranch, sc:0, disc:0 });
-  await sbWrite('shift_transactions', 'insert', [{
+  const _ciWriteRes = await sbWrite('shift_transactions', 'insert', [{
     id: _ciId, branch: activeBranch, date: todayKey(),
     bill_no: 'CI', type: 'Cash In', table_loc: '',
     items_text: reason, subtotal: amt, total: amt,
     method: 'cash-in', staff: currentStaff, return_reason: reason
   }]);
+  if (_ciWriteRes && _ciWriteRes.error) {
+    showToast('⚠️ Could not save Cash In — check your internet. Not recorded.', 'error');
+    return;
+  }
+  completedOrders.push({ id:_ciId, billNo:'CI', table:'', type:'Cash In', items:[{name:reason,price:amt,qty:1,note:''}], total:amt, method:'cash-in', time:new Date(), staff:currentStaff, branch:activeBranch, sc:0, disc:0 });
   cashInHand += amt;
   document.getElementById('bar-cash').textContent = 'Rs '+cashInHand;
   saveTodaySales(); renderCashView(); showToast('Cash In: Rs '+amt,'success');
@@ -4963,9 +4780,7 @@ async function addExpense() {
     expenseDesc: desc.trim()
   };
 
-  completedOrders.push(expenseEntry);
-  
-  await sbWrite('shift_transactions', 'insert', [{
+  const _expWriteRes = await sbWrite('shift_transactions', 'insert', [{
     id: _expId,
     branch: activeBranch,
     date: todayKey(),
@@ -4979,6 +4794,11 @@ async function addExpense() {
     staff: currentStaff,
     return_reason: desc.trim()
   }]);
+  if (_expWriteRes && _expWriteRes.error) {
+    showToast('⚠️ Could not save expense — check your internet. Not recorded.', 'error');
+    return;
+  }
+  completedOrders.push(expenseEntry);
 
   cashInHand -= amt;
   document.getElementById('bar-cash').textContent = 'Rs ' + cashInHand;
@@ -4992,13 +4812,17 @@ async function addCashOut() {
   if (!amt) return;
   const reason = prompt('Reason:') || 'Cash Out';
   const _coId = genId();
-  completedOrders.push({ id:_coId, billNo:'CO', table:'', type:'Cash Out', items:[{name:reason,price:amt,qty:1,note:''}], total:-amt, method:'cash-out', time:new Date(), staff:currentStaff, branch:activeBranch, sc:0, disc:0 });
-  await sbWrite('shift_transactions', 'insert', [{
+  const _coWriteRes = await sbWrite('shift_transactions', 'insert', [{
     id: _coId, branch: activeBranch, date: todayKey(),
     bill_no: 'CO', type: 'Cash Out', table_loc: '',
     items_text: reason, subtotal: amt, total: -amt,
     method: 'cash-out', staff: currentStaff, return_reason: reason
   }]);
+  if (_coWriteRes && _coWriteRes.error) {
+    showToast('⚠️ Could not save Cash Out — check your internet. Not recorded.', 'error');
+    return;
+  }
+  completedOrders.push({ id:_coId, billNo:'CO', table:'', type:'Cash Out', items:[{name:reason,price:amt,qty:1,note:''}], total:-amt, method:'cash-out', time:new Date(), staff:currentStaff, branch:activeBranch, sc:0, disc:0 });
   cashInHand -= amt;
   document.getElementById('bar-cash').textContent = 'Rs '+cashInHand;
   saveTodaySales(); renderCashView(); showToast('Cash Out: Rs '+amt,'error');
@@ -5463,7 +5287,8 @@ async function exportClosingExcel() {
 // LOCAL STORAGE
 // ══════════════════════════════════
 function saveTodaySales() {
-  persistLocalCompleted();
+  // No-op: Supabase is the only source of truth now. Every sale is written
+  // via sbWrite at the moment of the transaction — there's nothing to cache.
 }
 async function loadTodaySales() {
   if (!sb) return;
@@ -5490,7 +5315,6 @@ async function loadTodaySales() {
       document.getElementById('opening-bal-input').value = '';
       // Still restore any tables opened AFTER the close was run today
       await _loadActiveTables();
-      await _recoverOrdersFromKitchen();
       return;
     }
 
@@ -5530,23 +5354,6 @@ async function loadTodaySales() {
       if (nums.length) billCounter = Math.max(...nums) + 1;
     }
 
-    // Merge in sales that only exist in the local cache — i.e. made while
-    // offline and not yet synced. Without this a refresh before the queue
-    // flushes makes the sale (and its reprint) disappear from the till.
-    const localCache = loadLocalCompleted();
-    if (localCache && localCache.completedOrders && localCache.completedOrders.length) {
-      const known = new Set(completedOrders.map(o => o.billNo + '|' + o.method + '|' + o.total));
-      localCache.completedOrders.forEach(o => {
-        const key = o.billNo + '|' + o.method + '|' + o.total;
-        if (!known.has(key)) completedOrders.push(o);
-      });
-      completedOrders.sort((a,b) => new Date(a.time) - new Date(b.time));
-      if (localCache.paidOrderIds) localCache.paidOrderIds.forEach(id => paidOrderIds.add(id));
-      if (localCache.voidedOrderIds) localCache.voidedOrderIds.forEach(id => voidedOrderIds.add(id));
-      const nums2 = completedOrders.map(o => parseInt(o.billNo)).filter(n => !isNaN(n) && n > 0);
-      if (nums2.length) billCounter = Math.max(billCounter, Math.max(...nums2) + 1);
-    }
-
     // ── Recalculate totals ────────────────────────────────────────
     salesTotal = completedOrders
       .filter(o => !['cash-in','cash-out'].includes(o.method))
@@ -5559,7 +5366,6 @@ async function loadTodaySales() {
 
     // ── Restore open tables (survives refresh) ────────────────────
     await _loadActiveTables();
-    await _recoverOrdersFromKitchen();
 
     console.log('✅ Restored from cloud: bills=' + completedOrders.length +
       ' tables=' + Object.keys(tableOrders).length +
@@ -5988,6 +5794,17 @@ function showToast(msg, type='success') {
   toastTimer = setTimeout(()=>t.classList.remove('show'), 2800);
 }
 async function closeAllShifts() {
+  if (sb) {
+    try {
+      const { data: existingClose } = await sb.from('shift_closures')
+        .select('closed_at, closed_by').eq('branch', activeBranch).eq('date', todayKey())
+        .order('closed_at', { ascending: false }).limit(1).maybeSingle();
+      if (existingClose) {
+        const when = new Date(existingClose.closed_at).toLocaleTimeString('en-PK', {hour:'2-digit',minute:'2-digit',hour12:true});
+        if (!confirm('⚠️ Shifts were ALREADY closed today at ' + when + ' by ' + (existingClose.closed_by||'—') + '.\n\nClosing again RESETS the bill counter to 001 and can duplicate bill numbers.\n\nClose again anyway?')) return;
+      }
+    } catch(e) { console.warn('shift_closures pre-check failed:', e.message); }
+  }
   const pendingNow = getQueue().length;
   if (pendingNow > 0) {
     if (!confirm('⚠️ ' + pendingNow + ' transaction(s) are still waiting to sync (offline/slow connection).\n\nClosing now will finalize the report WITHOUT them.\n\nWait for sync instead? Press Cancel to wait, OK to close anyway.')) return;
@@ -6021,9 +5838,8 @@ async function closeAllShifts() {
     );
   }
 
-  // CRITICAL: the actual closure record — must queue if it fails, never vanish.
-  const _queueBeforeClose = getQueue().length;
-  await sbWrite('shift_closures', 'insert', [{
+  // CRITICAL: the actual closure record — must succeed or we abort the reset.
+  const _closureResult = await sbWrite('shift_closures', 'insert', [{
     branch: activeBranch,
     date: closedDate,
     closed_at: new Date().toISOString(),
@@ -6033,7 +5849,7 @@ async function closeAllShifts() {
       .reduce((s,o) => s + o.total, 0),
     bills_count: completedOrders.filter(o => !['cash-in','cash-out'].includes(o.method)).length
   }]);
-  const _closeGotQueued = getQueue().length > _queueBeforeClose;
+  const _closeGotQueued = !!(_closureResult && _closureResult.error);
 
   // Capture totals BEFORE clearing
   const allSales = completedOrders.filter(o => !['cash-in','cash-out','void'].includes(o.method));
@@ -6105,6 +5921,18 @@ async function closeAllShifts() {
 }
 
 async function closeAllShiftsAndArchive() {
+  if (sb) {
+    try {
+      const { data: existingClose } = await sb.from('shift_closures')
+        .select('closed_at, closed_by').eq('branch', activeBranch).eq('date', todayKey())
+        .order('closed_at', { ascending: false }).limit(1).maybeSingle();
+      if (existingClose) {
+        const when = new Date(existingClose.closed_at).toLocaleTimeString('en-PK', {hour:'2-digit',minute:'2-digit',hour12:true});
+        if (!confirm('⚠️ Shifts were ALREADY closed today at ' + when + ' by ' + (existingClose.closed_by||'—') + '.\n\nClosing again RESETS the bill counter to 001 and can duplicate bill numbers.\n\nClose again anyway?')) return;
+      }
+    } catch(e) { console.warn('shift_closures pre-check failed:', e.message); }
+  }
+
   const pendingNow = getQueue().length;
   if (pendingNow > 0) {
     if (!confirm('⚠️ ' + pendingNow + ' transaction(s) are still waiting to sync (offline/slow connection).\n\nArchiving now will finalize the report WITHOUT them.\n\nWait for sync instead? Press Cancel to wait, OK to archive anyway.')) return;
@@ -6137,9 +5965,8 @@ async function closeAllShiftsAndArchive() {
     } catch(e) { console.warn('kitchen_orders close (non-critical):', e.message); }
   }
 
-  // CRITICAL: the actual closure record — must queue if it fails, never vanish.
-  const _queueBeforeArchive = getQueue().length;
-  await sbWrite('shift_closures', 'insert', [{
+  // CRITICAL: the actual closure record — must succeed or we abort the reset.
+  const _archiveResult = await sbWrite('shift_closures', 'insert', [{
     branch: activeBranch,
     date: closedDate,
     closed_at: new Date().toISOString(),
@@ -6149,7 +5976,7 @@ async function closeAllShiftsAndArchive() {
       .reduce((s,o) => s + o.total, 0),
     bills_count: completedOrders.filter(o => !['cash-in','cash-out'].includes(o.method)).length
   }]);
-  const _archiveGotQueued = getQueue().length > _queueBeforeArchive;
+  const _archiveGotQueued = !!(_archiveResult && _archiveResult.error);
 
   // Capture totals BEFORE clearing
   const allSales = completedOrders.filter(o => !['cash-in','cash-out','void'].includes(o.method));
