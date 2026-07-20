@@ -1221,7 +1221,10 @@ async function checkConnectivity() {
     const { error } = await sb.from('staff').select('id').limit(1);
     const wasOffline = !isOnline;
     isOnline = !error;
-    if (wasOffline && isOnline) showToast('Back online ✅', 'success');
+    if (wasOffline && isOnline) {
+      showToast('Back online ✅ — refreshing data', 'success');
+      await _resyncAfterReconnect();
+    }
     if (!wasOffline && !isOnline) showToast('⚠️ Connection lost — check your internet', 'error');
   } catch (e) {
     isOnline = false;
@@ -1230,6 +1233,21 @@ async function checkConnectivity() {
     updateConnectionUI();
   }
   return isOnline;
+}
+
+// Whenever the connection comes back after being down, ask the database
+// what's actually true right now — instead of trusting local screen state
+// that may have gone stale if a "success" reply got lost during the outage.
+async function _resyncAfterReconnect() {
+  try {
+    await _loadActiveTables();
+    if (document.getElementById('view-tables')?.classList.contains('active')) renderTableMap();
+    if (document.getElementById('view-cash')?.classList.contains('active')) renderCashView();
+    if (document.getElementById('view-delivery')?.classList.contains('active')) renderDeliveryView();
+    if (document.getElementById('view-closing')?.classList.contains('active')) renderClosingReport();
+  } catch (e) {
+    console.error('Resync after reconnect failed:', e.message);
+  }
 }
 
 window.addEventListener('online', () => { checkConnectivity(); });
