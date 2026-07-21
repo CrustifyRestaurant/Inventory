@@ -3915,20 +3915,11 @@ async function applySplitByAmount() { // <-- Added async here
 
 async function _assignKotNumber() {
   if (currentOrder.kotNo) return currentOrder.kotNo;
-  if (!sb || !isOnline) { currentOrder.kotNo = DEVICE_CODE + '-' + String(billCounter).padStart(3,'0'); return currentOrder.kotNo; }
-  try {
-    const dayStart = new Date(); dayStart.setHours(0,0,0,0);
-    const { count, error } = await sb.from('kitchen_orders')
-      .select('id', { count:'exact', head:true })
-      .eq('branch', activeBranch)
-      .gte('created_at', dayStart.toISOString());
-    if (error || count === null || count === undefined) {
-      throw error || new Error('no count returned');
-    }
-    currentOrder.kotNo = String(count).padStart(3,'0') + '-' + DEVICE_CODE;
-  } catch(e) {
-    currentOrder.kotNo = DEVICE_CODE + '-' + String(billCounter).padStart(3,'0');
-  }
+  // Per-device sequential, same numbering scheme as bill numbers — resets
+  // correctly on day rollover / shift close because it's driven from
+  // billCounter, not from a live count of kitchen_orders (which never gets
+  // cleaned up and was causing inflated/duplicate KOT numbers).
+  currentOrder.kotNo = DEVICE_CODE + '-' + String(billCounter).padStart(3,'0');
   return currentOrder.kotNo;
 }
 
