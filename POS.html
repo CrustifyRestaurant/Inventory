@@ -2305,85 +2305,71 @@ async function _saveActiveTable(tname, orderData) {
 async function _loadActiveTables() {
   if (!sb) { showOfflineBlock(); return; }
   try {
-    const { data, error } = await sb.from('active_tables')
+    // 1. Get all "Open" tables currently stored in the cloud
+    const { data: cloudData, error } = await sb.from('active_tables')
       .select('*').eq('branch', activeBranch);
+    
     if (error) {
       console.error('active_tables load failed:', error.message);
       showOfflineBlock();
       return;
     }
 
-    tableOrders = {}; // cloud is the ONLY source of truth — nothing local seeded in
-
-    if (!data || !data.length) return;
-
-    // Added 'method' column to select so we can distinguish full order closures from item-level adjustments
+    // 2. Get today's completed transactions to see what is already PAID
     const { data: paidTx } = await sb.from('shift_transactions')
-      .select('kitchen_order_id, table_loc, created_at, method')
+      .select('kitchen_order_id, method')
       .eq('date', todayKey())
       .eq('branch', activeBranch);
 
-    const paidKitchenIds = new Set();
-    const paidTableTimes = {};
-
-    // Only these methods mean the order itself was actually closed out — a
-    // completed sale, a void, or a discard. Partial edits like item-void or
-    // return happen on an order that's still open and must NOT be treated
-    // as "table cleared" — otherwise removing a single item wipes the whole
-    // table off other screens even though the order is still active.
+    // Only these methods count as "The table is finished"
     const CLOSING_METHODS = new Set([
       'cash', 'card', 'bank', 'jazzcash', 'foodpanda', 
       'split', 'void', 'discarded', 'deleted-delivery'
     ]);
 
+    const paidKitchenIds = new Set();
     (paidTx || []).forEach(t => {
-      // Ignore partial adjustments/item voids
-      if (!t.method || !CLOSING_METHODS.has(t.method)) return;
-
-      if (t.kitchen_order_id) paidKitchenIds.add(t.kitchen_order_id);
-      if (t.table_loc) {
-        const variants = [t.table_loc, t.table_loc.replace(/ /g,'-'), t.table_loc.replace(/-/g,' ')];
-        const paidAt = new Date(t.created_at).getTime();
-        variants.forEach(v => { if (!paidTableTimes[v] || paidAt > paidTableTimes[v]) paidTableTimes[v] = paidAt; });
+      if (t.kitchen_order_id && CLOSING_METHODS.has(t.method)) {
+        paidKitchenIds.add(t.kitchen_order_id);
       }
     });
 
+    tableOrders = {}; // Reset local memory to sync with Cloud truth
     const staleRows = [];
     let restored = 0;
 
-    for (const row of data) {
+    // 3. Process each table found in the cloud
+    for (const row of cloudData) {
       const tname = row.table_name;
       const order = row.order_data;
       if (!tname || !order) { staleRows.push(tname); continue; }
 
-      if (order.id && paidKitchenIds.has(order.id)) { staleRows.push(tname); continue; }
-
-      if (!order.fromWeb && !order.id) {
-        const orderStartTime = order.startTime || 0;
-        const lastPaidAt = paidTableTimes[tname]
-          || paidTableTimes[tname.replace(/-/g,' ')]
-          || paidTableTimes[tname.replace(/ /g,'-')]
-          || 0;
-        if (lastPaidAt > orderStartTime) { staleRows.push(tname); continue; }
+      // CRITICAL FIX: 
+      // We ONLY remove the table if its UNIQUE ID is found in the paid list.
+      // We no longer check "Time" or "Table Name" because those cause vanishing orders.
+      if (order.id && paidKitchenIds.has(order.id)) {
+        staleRows.push(tname); 
+        continue; 
       }
 
+      // If it's not paid yet, keep it on the map
       tableOrders[tname] = order;
       restored++;
     }
 
+    // 4. Clean up the database for the rows we identified as finished
     if (staleRows.length) {
       for (const tname of staleRows) {
         try {
-          const { error } = await sb.from('active_tables').delete()
+          await sb.from('active_tables').delete()
             .eq('branch', activeBranch).eq('table_name', tname);
-          if (error) console.error('Stale table cleanup failed for', tname, error.message);
         } catch (e) {
-          console.error('Stale table cleanup failed for', tname, e.message);
+          console.error('Cleanup failed for', tname, e.message);
         }
       }
     }
 
-    if (restored) console.log('✅ Restored', restored, 'active tables from cloud');
+    if (restored > 0) console.log('✅ Restored', restored, 'active tables from cloud');
   } catch(e) {
     console.error('_loadActiveTables failed:', e.message);
     showOfflineBlock();
@@ -2844,6 +2830,9 @@ async function createPosOrderRecord(tname, type) {
     const addr = isDelivery ? (document.getElementById('delivery-address')?.value || '') : '';
     const delCharge = isDelivery ? (parseFloat(document.getElementById('delivery-charge')?.value) || 0) : 0;
     
+    // FIX: Reserve the unique sequence number from Supabase immediately
+    const reservedKot = await _assignKotNumber();
+
     const obj = {
       type: type,
       location: isDelivery ? (addr || tname) : tname,
@@ -2852,18 +2841,23 @@ async function createPosOrderRecord(tname, type) {
       subtotal: 0,
       delivery_fee: delCharge,
       branch: activeBranch,
-      customer_name: null,
-      phone: null,
-      source: 'POS'
+      customer_name: document.getElementById('order-customer-name')?.value || null,
+      phone: document.getElementById('order-customer-phone')?.value || null,
+      source: 'POS',
+      kot_no: reservedKot // Save this number to the cloud immediately
     };
     
     const res = await sbWrite('kitchen_orders', 'insert', [obj]);
     if (res && res.data && res.data[0]) {
-  currentOrder.id = res.data[0].id;
-  if (tableOrders[tname]) {
-    tableOrders[tname].id = res.data[0].id;
-    tableOrders[tname].webOrderId = res.data[0].id;
-    _saveActiveTable(tname, tableOrders[tname]);
+      currentOrder.id = res.data[0].id;
+      currentOrder.kotNo = reservedKot; // Put number in local memory
+      
+      if (tableOrders[tname]) {
+        tableOrders[tname].id = res.data[0].id;
+        tableOrders[tname].kotNo = reservedKot;
+        tableOrders[tname].webOrderId = res.data[0].id;
+        // Save the update to active_tables in Supabase
+        _saveActiveTable(tname, tableOrders[tname]);
       }
     }
   } catch(e) { 
@@ -3765,7 +3759,7 @@ async function applySplitByItems() {
   var _splitItemsSaleId = genId();
   var splitSale = {
     id: _splitItemsSaleId,
-    billNo: DEVICE_CODE + '-' + String(billCounter).padStart(3,'0'), table: currentOrder.table, type: currentOrder.type,
+    billNo: currentOrder.kotNo || (DEVICE_CODE + '-' + String(billCounter++).padStart(3,'0')), table: currentOrder.table, type: currentOrder.type,
     items: selected, total: splitTotal, method: splitItemMethod,
     time: new Date(), staff: currentStaff, branch: activeBranch,
     customerName: currentOrder.customerName || '',
@@ -3914,12 +3908,41 @@ async function applySplitByAmount() { // <-- Added async here
 // ══════════════════════════════════
 
 async function _assignKotNumber() {
+  // If this order already has a number assigned, don't change it!
   if (currentOrder.kotNo) return currentOrder.kotNo;
-  // Per-device sequential, same numbering scheme as bill numbers — resets
-  // correctly on day rollover / shift close because it's driven from
-  // billCounter, not from a live count of kitchen_orders (which never gets
-  // cleaned up and was causing inflated/duplicate KOT numbers).
-  currentOrder.kotNo = DEVICE_CODE + '-' + String(billCounter).padStart(3,'0');
+  
+  let nextNum = billCounter; 
+  try {
+    // Check Supabase for the actual highest number used at this branch today
+    const { data } = await sb.from('shift_transactions')
+      .select('bill_no')
+      .eq('branch', activeBranch)
+      .eq('date', todayKey())
+      .order('created_at', { ascending: false })
+      .limit(20); // Look at last 20 to be safe
+
+    if (data && data.length > 0) {
+      // Find the highest numeric suffix used today across all devices
+      const nums = data.map(t => {
+        const parts = String(t.bill_no).split('-');
+        return parseInt(parts[parts.length - 1]);
+      }).filter(n => !isNaN(n));
+      
+      if (nums.length > 0) {
+        const maxUsed = Math.max(...nums);
+        nextNum = maxUsed + 1;
+      }
+    }
+  } catch (e) {
+    console.warn("DB counter check failed, using local counter:", e);
+  }
+
+  // Assign the unique number
+  currentOrder.kotNo = DEVICE_CODE + '-' + String(nextNum).padStart(3, '0');
+  billCounter = nextNum + 1; // Update local counter so the next one is ready
+  
+  document.getElementById('bar-billno').textContent = String(billCounter).padStart(3, '0');
+  saveTableOrder(); 
   return currentOrder.kotNo;
 }
 
@@ -4059,7 +4082,8 @@ async function _markTakeawayPaidInner() {
   // Ask payment method
   const payM = promptPaymentMethod('Payment method?');
   if (payM === null) { showToast('Payment cancelled — order kept open', 'error'); return; }
-  const tokenNo = DEVICE_CODE + '-' + String(billCounter).padStart(3, '0');
+  if (!currentOrder.id && !currentOrder.sentToKitchen) await sendToKitchen();
+  const tokenNo = currentOrder.kotNo || (await _assignKotNumber());
   const _twSaleId = genId();
   const sale = {
     id: _twSaleId,
@@ -4114,10 +4138,7 @@ async function _markTakeawayPaidInner() {
   const cashPart = payM === 'cash' ? grand : 0;
   cashInHand += cashPart;
   salesTotal += grand;
-  billCounter++;
-  
   document.getElementById('bar-cash').textContent = 'Rs ' + cashInHand;
-  document.getElementById('bar-billno').textContent = String(billCounter).padStart(3,'0');
   saveTodaySales();
   printTakeawaySlip(sale);
   const _twTable = currentOrder.table;
@@ -4233,7 +4254,8 @@ async function completePayment() {
       if (sc < 0) sc = 0;
     }
  
-    const billNo = DEVICE_CODE + '-' + String(billCounter).padStart(3, '0');
+    if (!currentOrder.id && !currentOrder.sentToKitchen) await sendToKitchen(); // ensures kotNo exists
+const billNo = currentOrder.kotNo || (await _assignKotNumber());
     const riderTag = (currentOrder.type === 'Delivery' && currentOrder.rider) ? ` [Rider: ${currentOrder.rider}]` : '';
     const saleId = genId();
     const sale = {
@@ -4289,9 +4311,7 @@ items_text: sale.items.map(i => `${i.qty}x ${i.name}`).join(', ') + sale.riderTa
     const cashPart = payMethod === 'cash' ? grand : payMethod === 'split' ? sale.splitCash : 0;
     cashInHand += cashPart;
     salesTotal  += grand;
-    billCounter++;
     document.getElementById('bar-cash').textContent   = 'Rs ' + cashInHand;
-    document.getElementById('bar-billno').textContent = String(billCounter).padStart(3, '0');
  
     if (!currentOrder.id && !currentOrder.sentToKitchen) await sendToKitchen();
     if (currentOrder.id) paidOrderIds.add(currentOrder.id);
@@ -4601,16 +4621,12 @@ async function updateDeliveryStatus(orderId, status, knownOrder) {
       if (paymentMethod === null) { showToast('Cancelled — order not marked delivered', 'error'); return; }
     }
 
-    // For OUT/PAID: record the sale FIRST. Only mark the kitchen order
-    // settled and clear it off the table map once the sale write actually
-    // succeeds — otherwise a failed/offline write can leave the order
-    // showing "delivered" with no money ever recorded against it.
     if (status === 'OUT' || status === 'PAID') {
       let ko = null;
       if (sb && isOnline) {
         try {
           const { data } = await sb.from('kitchen_orders')
-            .select('id, subtotal, delivery_fee, location, items, customer_name, phone, discount').eq('id', orderId).single();
+            .select('id, subtotal, delivery_fee, location, items, customer_name, phone, discount, kot_no, rider').eq('id', orderId).single();
           ko = data;
         } catch(e) { console.warn('Live fetch failed, using cached order:', e.message); }
       }
@@ -4621,36 +4637,49 @@ async function updateDeliveryStatus(orderId, status, knownOrder) {
         return;
       }
 
-      const shopTotal = ko.subtotal || 0;
+      const subtotal = ko.subtotal || 0;
       const delFee = ko.delivery_fee || 0;
+      const discount = ko.discount || 0;
+      // The Grand Total is Subtotal + Delivery - Discount
+      const grandTotal = Math.max(0, subtotal + delFee - discount);
+      
       const alreadySaved = completedOrders.find(o => o.kitchenOrderId === orderId);
 
       if (!alreadySaved) {
-        const billNo = DEVICE_CODE + '-' + String(billCounter).padStart(3, '0');
+        // ✅ HARDENED NUMBERING: Use the locked number from Supabase or generate a new one.
+        let billNo = ko.kot_no || knownOrder?.kotNo;
+        if (!billNo) {
+          billNo = await _assignKotNumber();
+        }
+
+        const riderTag = ko.rider ? ` [Rider: ${ko.rider}]` : '';
         const _delSaleId = genId();
+
         const sale = {
           id: _delSaleId,
           billNo, table: ko.location, type: 'Delivery',
-          items: [], total: shopTotal, method: paymentMethod,
+          items: [], total: grandTotal, method: paymentMethod,
           time: new Date(), staff: currentStaff, branch: activeBranch,
           customerName: ko.customer_name || '',
           customerPhone: ko.phone || '',
           deliveryAddress: ko.location || '',
-          deliveryCharge: ko.delivery_fee || 0,
-          sc: 0, disc: ko.discount || 0, scPct: 0, discType: 'flat', discAmount: ko.discount || 0,
+          deliveryCharge: delFee,
+          sc: 0, disc: discount, scPct: 0, discType: 'flat', discAmount: discount,
           splitCash: 0, splitCard: 0,
           kitchenOrderId: orderId
         };
+
         const _delWriteRes = await sbWrite('shift_transactions', 'insert', [{
           id: _delSaleId, branch: activeBranch, date: todayKey(),
           bill_no: billNo, type: 'Delivery',
           table_loc: ko.location || '',
-          items_text: ko.items || '',
-          subtotal: ko.subtotal || 0,
+          items_text: (ko.items || '') + riderTag, // ✅ Added Rider to the text
+          subtotal: subtotal,
           sc: 0, sc_pct: 0,
-          discount: ko.discount || tableOrders[ko.location]?.discAmount || 0,
+          discount: discount,
           delivery_charge: delFee,
-          total: Math.max(0, shopTotal - (ko.discount || 0)), method: paymentMethod,
+          total: grandTotal, // ✅ Corrected math
+          method: paymentMethod,
           cash_received: 0, split_cash: 0, split_card: 0,
           staff: currentStaff,
           customer_name: ko.customer_name || '',
@@ -4659,26 +4688,20 @@ async function updateDeliveryStatus(orderId, status, knownOrder) {
           kitchen_order_id: orderId
         }]);
 
-        // Sale write failed — stop here. Order stays open on the table map,
-        // status stays unchanged, nothing is silently lost.
         if (_delWriteRes && _delWriteRes.error) {
-          showToast('⚠️ Could not save this delivery sale — check your internet. Status NOT changed, please retry.', 'error');
+          showToast('⚠️ Could not save this delivery sale — check your internet.', 'error');
           return;
         }
 
         completedOrders.push(sale);
-        billCounter++;
-        if (paymentMethod === 'cash') cashInHand += shopTotal;
+        if (paymentMethod === 'cash') cashInHand += (subtotal - discount); // Rider keeps the delFee
         document.getElementById('bar-cash').textContent = 'Rs ' + cashInHand;
-        document.getElementById('bar-billno').textContent = String(billCounter).padStart(3, '0');
         saveTodaySales();
       }
     }
 
-    // Sale is safely recorded (or already had been) — now it's safe to mark
-    // the kitchen order settled and clear it off the table map.
-    const updateData = { status };
-    await sbWrite('kitchen_orders', 'update', updateData, { eq:[['id', orderId]] });
+    // Mark the kitchen order settled in Supabase
+    await sbWrite('kitchen_orders', 'update', { status: status }, { eq:[['id', orderId]] });
     showToast(`Status → ${status} [${paymentMethod.toUpperCase()}]`, 'success');
 
     if (status === 'OUT' || status === 'PAID') {
