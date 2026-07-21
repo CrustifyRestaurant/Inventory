@@ -2317,14 +2317,29 @@ async function _loadActiveTables() {
 
     if (!data || !data.length) return;
 
+    // Added 'method' column to select so we can distinguish full order closures from item-level adjustments
     const { data: paidTx } = await sb.from('shift_transactions')
-      .select('kitchen_order_id, table_loc, created_at')
+      .select('kitchen_order_id, table_loc, created_at, method')
       .eq('date', todayKey())
       .eq('branch', activeBranch);
 
     const paidKitchenIds = new Set();
     const paidTableTimes = {};
+
+    // Only these methods mean the order itself was actually closed out — a
+    // completed sale, a void, or a discard. Partial edits like item-void or
+    // return happen on an order that's still open and must NOT be treated
+    // as "table cleared" — otherwise removing a single item wipes the whole
+    // table off other screens even though the order is still active.
+    const CLOSING_METHODS = new Set([
+      'cash', 'card', 'bank', 'jazzcash', 'foodpanda', 
+      'split', 'void', 'discarded', 'deleted-delivery'
+    ]);
+
     (paidTx || []).forEach(t => {
+      // Ignore partial adjustments/item voids
+      if (!t.method || !CLOSING_METHODS.has(t.method)) return;
+
       if (t.kitchen_order_id) paidKitchenIds.add(t.kitchen_order_id);
       if (t.table_loc) {
         const variants = [t.table_loc, t.table_loc.replace(/ /g,'-'), t.table_loc.replace(/-/g,' ')];
@@ -3226,17 +3241,23 @@ function openDealFlavorModal(deal, flavors) {
 // ORDER MANAGEMENT
 // ══════════════════════════════════
 function addItemToOrder(item, price, qty=1, note='') {
+  const wasSentAlready = !!currentOrder.id || !!currentOrder.sentToKitchen;
   const existing = currentOrder.items.find(i => i.name===item.n && i.note===note);
-  if (existing) { existing.qty += qty; }
-  else { currentOrder.items.push({ name:item.n, price:price, qty:qty, note:note }); }
-  // If this was a web order, adding items means cashier is modifying it — auto mark as confirmed
+  if (existing) {
+    existing.qty += qty;
+    if (wasSentAlready) { existing.addedAfterKOT = (existing.addedAfterKOT||0) + qty; currentOrder.needsKitchenUpdate = true; }
+  } else {
+    const newItem = { name:item.n, price:price, qty:qty, note:note };
+    if (wasSentAlready) { newItem.addedAfterKOT = qty; currentOrder.needsKitchenUpdate = true; }
+    currentOrder.items.push(newItem);
+  }
   if (currentOrder.fromWeb && !currentOrder.confirmed) {
     currentOrder.confirmed = true;
     if (tableOrders[currentOrder.table]) tableOrders[currentOrder.table].confirmed = true;
     document.getElementById('pending-banner').classList.remove('show');
   }
   saveTableOrder(); renderOrderItems();
-  showToast(item.n + ' added', 'success');
+  showToast(item.n + (wasSentAlready ? ' added — tap 🖨️ Kitchen to send it' : ' added'), wasSentAlready ? 'error' : 'success');
 }
 
 function saveTableOrder() {
@@ -3326,11 +3347,17 @@ function renderOrderItems() {
 function changeItemQty(idx, d) {
   if (d < 0) { requestItemAdjustment(idx, 'decrease', d); return; }
   const wasSentAlready = !!currentOrder.id || !!currentOrder.sentToKitchen;
-  currentOrder.items[idx].qty += d;
+  const item = currentOrder.items[idx];
+  item.qty += d;
+  if (wasSentAlready) {
+    // Track units added after the ticket already went out, so the next
+    // manual kitchen print can call them out instead of blending silently.
+    item.addedAfterKOT = (item.addedAfterKOT || 0) + d;
+    currentOrder.needsKitchenUpdate = true;
+  }
   saveTableOrder(); renderOrderItems();
   if (wasSentAlready) {
-    showToast('⚠️ Qty increased after KOT — printing updated kitchen ticket', 'error');
-    printKitchenTicket();
+    showToast('⚠️ Added after KOT — tap 🖨️ Kitchen to send it', 'error');
   }
 }
 function removeItem(idx) { requestItemAdjustment(idx, 'remove', 0); }
@@ -4338,10 +4365,12 @@ async function printKitchenTicket() {
   const tokenNum = (type === 'Takeaway' && currentOrder.tokenNo) ? currentOrder.tokenNo : kotNum;
 
   const itemsHTML = currentOrder.items.map(i => {
+    const addedNote = i.addedAfterKOT ? `<div style="font-size:14px;font-weight:900;color:#c0392b;margin-top:3px;padding-left:18px;">➕ RECALL / ADDED: +${i.addedAfterKOT}</div>` : '';
     return `<div style="display:flex;justify-content:space-between;align-items:flex-start;padding:6px 0;border-bottom:1px dashed #ccc;">
       <div style="flex:1;">
         <div style="font-size:17px;font-weight:900;letter-spacing:0.3px;">${i.qty}x &nbsp;${i.name}</div>
         ${i.note ? `<div style="font-size:13px;font-weight:700;color:#333;margin-top:3px;padding-left:18px;">↳ ${i.note}</div>` : ''}
+        ${addedNote}
       </div>
     </div>`;
   }).join('');
@@ -4412,6 +4441,10 @@ async function printKitchenTicket() {
   setTimeout(() => {
     window.print();
     document.getElementById('print-area').innerHTML = '';
+    // Ticket printed — clear the "added after KOT" markers now that kitchen has seen them
+    currentOrder.items.forEach(i => { delete i.addedAfterKOT; });
+    currentOrder.needsKitchenUpdate = false;
+    saveTableOrder();
     updateActionButtonsState();
     showToast('Kitchen ticket printed 🔥', 'success');
   }, 300);
