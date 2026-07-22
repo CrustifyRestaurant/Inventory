@@ -4420,17 +4420,19 @@ async function printKitchenTicket() {
       </div>`;
 
   } else if (type === 'Takeaway') {
+    const tokenLen = tokenNum.length;
+    const tokenFontSize = tokenLen > 10 ? 30 : tokenLen > 7 ? 38 : 48;
     headerHTML = `
       <div style="border:2px solid #000;border-radius:8px;padding:10px 14px;margin-bottom:12px;">
-        <div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px;">
-          <span style="font-size:48px;font-weight:900;line-height:1;">🎫 #${tokenNum}</span>
-          <span style="font-size:22px;font-weight:900;letter-spacing:0.5px;white-space:nowrap;">KOT #${kotNum}</span>
+        <div style="text-align:center;">
+          <span style="font-size:${tokenFontSize}px;font-weight:900;line-height:1.1;word-break:break-word;">🎫 #${tokenNum}</span>
         </div>
-        <div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-top:2px;">
+        <div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-top:6px;border-top:1px dashed #000;padding-top:5px;">
+          <span style="font-size:13px;font-weight:700;letter-spacing:1px;">KOT #${kotNum}</span>
           <span style="font-size:13px;font-weight:700;letter-spacing:2px;text-transform:uppercase;">TAKEAWAY</span>
-          <span style="font-size:20px;font-weight:900;letter-spacing:0.5px;">${table}</span>
+          <span style="font-size:16px;font-weight:900;letter-spacing:0.5px;">${table}</span>
         </div>
-        ${custName ? `<div style="font-size:18px;font-weight:800;margin-top:4px;">👤 ${custName}</div>` : ''}
+        ${custName ? `<div style="font-size:16px;font-weight:800;margin-top:4px;text-align:center;">👤 ${custName}</div>` : ''}
       </div>`;
 
   } else if (type === 'Delivery') {
