@@ -4029,7 +4029,7 @@ function printBillOnly() {
   const delCharge = getDelCharge();
   const { food, sc, grand, disc } = getOrderTotal(currentOrder.items, currentOrder.type, scOn, pct, discAmt, discType, delCharge);
   const bill = {
-    billNo: DEVICE_CODE + '-' + String(billCounter).padStart(3,'0'),
+    billNo: currentOrder.kotNo || (DEVICE_CODE + '-' + String(billCounter).padStart(3,'0')),
     table: currentOrder.table,
     type: currentOrder.type,
     items: [...currentOrder.items],
