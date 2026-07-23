@@ -2309,56 +2309,79 @@ async function _loadActiveTables() {
     // 1. Get all "Open" tables currently stored in the cloud
     const { data: cloudData, error } = await sb.from('active_tables')
       .select('*').eq('branch', activeBranch);
-    
+
     if (error) {
       console.error('active_tables load failed:', error.message);
       showOfflineBlock();
       return;
     }
 
-    // 2. Get today's completed transactions to see what is already PAID
-    const { data: paidTx } = await sb.from('shift_transactions')
-      .select('kitchen_order_id, method')
-      .eq('date', todayKey())
-      .eq('branch', activeBranch);
+    // 2. Check kitchen_orders.status directly — NOT restricted to "today".
+    // A table paid at 1am belongs to the shift that started at 3pm the day
+    // before, so any date-scoped lookup will miss it and let it reappear.
+    const orderIds = cloudData
+      .map(r => r.order_data && r.order_data.id)
+      .filter(Boolean);
 
-    // Only these methods count as "The table is finished"
+    const closedStatusIds = new Set();
+    if (orderIds.length) {
+      const { data: koRows } = await sb.from('kitchen_orders')
+        .select('id, status').in('id', orderIds);
+      (koRows || []).forEach(k => {
+        if (['PAID', 'OUT', 'VOIDED', 'CLOSED'].includes(k.status)) {
+          closedStatusIds.add(k.id);
+        }
+      });
+    }
+
+    // 3. Belt-and-suspenders: also check shift_transactions by kitchen_order_id
+    // across ALL dates (not just today), in case a row's status update itself
+    // failed but the sale was actually recorded.
     const CLOSING_METHODS = new Set([
-      'cash', 'card', 'bank', 'jazzcash', 'foodpanda', 
+      'cash', 'card', 'bank', 'jazzcash', 'foodpanda',
       'split', 'void', 'discarded', 'deleted-delivery'
     ]);
+    let closedTxIds = new Set();
+    if (orderIds.length) {
+      const { data: paidTx } = await sb.from('shift_transactions')
+        .select('kitchen_order_id, method')
+        .eq('branch', activeBranch)
+        .in('kitchen_order_id', orderIds);
+      (paidTx || []).forEach(t => {
+        if (t.kitchen_order_id && CLOSING_METHODS.has(t.method)) {
+          closedTxIds.add(t.kitchen_order_id);
+        }
+      });
+    }
 
-    const paidKitchenIds = new Set();
-    (paidTx || []).forEach(t => {
-      if (t.kitchen_order_id && CLOSING_METHODS.has(t.method)) {
-        paidKitchenIds.add(t.kitchen_order_id);
-      }
-    });
+    // 4. Hard safety net: no table order should ever legitimately stay open
+    // past ~16 hours (covers a full 3pm→3am shift with buffer). If a row is
+    // older than that, something upstream failed to clear it — drop it
+    // regardless of status/tx lookups.
+    const MAX_AGE_MS = 16 * 60 * 60 * 1000;
 
-    tableOrders = {}; // Reset local memory to sync with Cloud truth
+    tableOrders = {};
     const staleRows = [];
     let restored = 0;
 
-    // 3. Process each table found in the cloud
     for (const row of cloudData) {
       const tname = row.table_name;
       const order = row.order_data;
       if (!tname || !order) { staleRows.push(tname); continue; }
 
-      // CRITICAL FIX: 
-      // We ONLY remove the table if its UNIQUE ID is found in the paid list.
-      // We no longer check "Time" or "Table Name" because those cause vanishing orders.
-      if (order.id && paidKitchenIds.has(order.id)) {
-        staleRows.push(tname); 
-        continue; 
+      const isClosed = order.id && (closedStatusIds.has(order.id) || closedTxIds.has(order.id));
+      const isTooOld = order.startTime && (Date.now() - order.startTime) > MAX_AGE_MS;
+
+      if (isClosed || isTooOld) {
+        staleRows.push(tname);
+        continue;
       }
 
-      // If it's not paid yet, keep it on the map
       tableOrders[tname] = order;
       restored++;
     }
 
-    // 4. Clean up the database for the rows we identified as finished
+    // 5. Clean up the database for every row we identified as finished/stale
     if (staleRows.length) {
       for (const tname of staleRows) {
         try {
@@ -6013,7 +6036,7 @@ async function closeAllShifts() {
 
   setTimeout(() => {
     window.print();
-    setTimeout(() => {
+    setTimeout(async () => {
       if (_closeGotQueued || !isOnline) {
         showToast('⚠️ Offline — closure queued but NOT yet synced. Data kept locally. Retry "Close Shifts" once online.', 'error');
         updateOfflineBadge();
@@ -6022,7 +6045,16 @@ async function closeAllShifts() {
       localStorage.removeItem('crustify_completed_' + activeBranch + '_' + todayKey());
       localStorage.removeItem('crustify_tables_' + activeBranch);
       localStorage.removeItem('crustify_removed_' + activeBranch);
-      if (sb) sb.from('active_tables').delete().eq('branch', activeBranch).catch(()=>{});
+      let _atCleared = false;
+      for (let attempt = 0; attempt < 3 && !_atCleared; attempt++) {
+        try {
+          const { error } = await sb.from('active_tables').delete().eq('branch', activeBranch);
+          if (!error) _atCleared = true;
+        } catch(e) { console.error('active_tables clear attempt', attempt, 'failed:', e.message); }
+      }
+      if (!_atCleared) {
+        showToast('⚠️ Could not clear active tables in cloud — they may reappear. Retry Close Shifts once online.', 'error');
+      }
       completedOrders = [];
       tableOrders = {};
       openingBalance = 0;
@@ -6133,7 +6165,7 @@ async function closeAllShiftsAndArchive() {
 
   setTimeout(() => {
     window.print();
-    setTimeout(() => {
+    setTimeout(async () => {
       if (_archiveGotQueued || !isOnline) {
         showToast('⚠️ Offline — archive queued but NOT yet synced. Data kept locally. Retry once online.', 'error');
         updateOfflineBadge();
@@ -6142,7 +6174,16 @@ async function closeAllShiftsAndArchive() {
       localStorage.removeItem('crustify_completed_' + activeBranch + '_' + todayKey());
       localStorage.removeItem('crustify_tables_' + activeBranch);
       localStorage.removeItem('crustify_removed_' + activeBranch);
-      if (sb) sb.from('active_tables').delete().eq('branch', activeBranch).catch(()=>{});
+      let _atCleared2 = false;
+      for (let attempt = 0; attempt < 3 && !_atCleared2; attempt++) {
+        try {
+          const { error } = await sb.from('active_tables').delete().eq('branch', activeBranch);
+          if (!error) _atCleared2 = true;
+        } catch(e) { console.error('active_tables clear attempt', attempt, 'failed:', e.message); }
+      }
+      if (!_atCleared2) {
+        showToast('⚠️ Could not clear active tables in cloud — they may reappear. Retry once online.', 'error');
+      }
       completedOrders = [];
       tableOrders = {};
       openingBalance = 0;
