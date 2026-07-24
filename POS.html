@@ -3460,7 +3460,7 @@ async function changeTablePrompt() {
 async function returnItem(idx) {
   const item = currentOrder.items[idx];
   const adminPin = prompt('Enter Admin PIN to return this item:');
-  if (adminPin !== '7530' && adminPin !== '1234') { showToast('Wrong Admin PIN — return cancelled', 'error'); return; }
+  if (adminPin !== '7530' && adminPin !== '2314') { showToast('Wrong Admin PIN — return cancelled', 'error'); return; }
   const reason = prompt('Return reason for "' + item.name + '"?\n(e.g. Wrong item, Customer changed mind, Quality issue)');
   if (reason === null) return; // cancelled
   if (!reason.trim()) { showToast('Return reason is required', 'error'); return; }
@@ -3545,7 +3545,7 @@ async function voidCurrentOrder() {
   
   // Require admin PIN
   const adminPin = prompt('Enter Admin PIN to void order:');
-  if (adminPin !== '7530' && adminPin !== '1234') { 
+  if (adminPin !== '7530' && adminPin !== '2314') { 
     showToast('Wrong Admin PIN — void cancelled', 'error'); return; 
   }
   
@@ -4203,7 +4203,7 @@ function openPayModal() {
   const { grand } = getOrderTotal(currentOrder.items, currentOrder.type, scOn, pct, discAmt, discType, delCharge);
   if (currentOrder.billPrinted && Math.abs(grand - (currentOrder.printedTotal||grand)) > 0.5) {
     const adminPin = prompt('⚠️ Printed bill was Rs ' + currentOrder.printedTotal + ' but collecting Rs ' + grand + '.\nEnter Admin PIN to proceed:');
-    if (adminPin !== '7530' && adminPin !== '1234') { showToast('Wrong PIN — payment cancelled', 'error'); return; }
+    if (adminPin !== '7530' && adminPin !== '2314') { showToast('Wrong PIN — payment cancelled', 'error'); return; }
     const reason = prompt('Reason for the difference?');
     if (!reason || !reason.trim()) { showToast('Reason required', 'error'); return; }
     currentOrder.billMismatchReason = reason.trim();
@@ -4785,7 +4785,7 @@ async function updateDeliveryStatus(orderId, status, knownOrder) {
 
 async function deleteDelivery(orderId) {
   const adminPin = prompt('Enter Admin PIN to delete this delivery order:');
-  if (adminPin !== '7530' && adminPin !== '1234') { showToast('Wrong PIN — cancelled', 'error'); return; }
+  if (adminPin !== '7530' && adminPin !== '2314') { showToast('Wrong PIN — cancelled', 'error'); return; }
   const reason = prompt('Reason for deleting this delivery order? (required)');
   if (!reason || !reason.trim()) { showToast('Reason is required', 'error'); return; }
 
