@@ -6,6 +6,7 @@
 <title>Crustify POS v2</title>
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet"><script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
 <style>
 :root {
   --red:#c0392b;--dark-red:#922b21;--orange:#e67e22;--dark-orange:#a04000;
@@ -4400,65 +4401,16 @@ async function completePayment() {
 
 // ══════════════════════════════════
 // Silent network print to Kitchen Printer via local bridge
+// Renders the existing styled ticket as an IMAGE and sends that,
+// so the kitchen slip keeps its boxes/bold layout even though it's
+// bypassing the Windows print dialog.
 // ══════════════════════════════════
-function buildKitchenTicketPlainText(itemsHTML_data) {
-  // itemsHTML_data = { type, table, kotNum, tokenNum, delAddr, custName, items, fromWeb, time }
-  const ESC = '\x1B', GS = '\x1D';
-  const INIT = ESC + '@';
-  const BOLD_ON = ESC + 'E' + '\x01';
-  const BOLD_OFF = ESC + 'E' + '\x00';
-  const BIG_ON = GS + '!' + '\x11';
-  const BIG_OFF = GS + '!' + '\x00';
-  const CENTER = ESC + 'a' + '\x01';
-  const LEFT = ESC + 'a' + '\x00';
-  const CUT = '\n\n\n\n' + GS + 'V' + '\x00';
-
-  let t = INIT;
-  t += CENTER + BOLD_ON + BIG_ON + 'CRUSTIFY\n' + BIG_OFF + BOLD_OFF;
-  t += itemsHTML_data.time + '  ' + activeBranch + '\n';
-  t += '--------------------------------\n';
-  t += LEFT + BOLD_ON;
-
-  if (itemsHTML_data.type === 'Dine-In') {
-    t += BIG_ON + itemsHTML_data.table + '\n' + BIG_OFF;
-    t += 'KOT #' + itemsHTML_data.kotNum + '   DINE-IN\n';
-  } else if (itemsHTML_data.type === 'Takeaway') {
-    t += CENTER + BIG_ON + '#' + itemsHTML_data.tokenNum + '\n' + BIG_OFF + LEFT;
-    t += 'KOT #' + itemsHTML_data.kotNum + '   TAKEAWAY   ' + itemsHTML_data.table + '\n';
-    if (itemsHTML_data.custName) t += CENTER + itemsHTML_data.custName + '\n' + LEFT;
-  } else if (itemsHTML_data.type === 'Delivery') {
-    t += (itemsHTML_data.delAddr || itemsHTML_data.table) + '\n';
-    t += 'KOT #' + itemsHTML_data.kotNum + '   DELIVERY\n';
-    if (itemsHTML_data.custName) t += itemsHTML_data.custName + '\n';
-  }
-  t += BOLD_OFF + '--------------------------------\n';
-
-  if (itemsHTML_data.fromWeb) t += BOLD_ON + '*** WEB/QR ORDER ***\n' + BOLD_OFF;
-
-  itemsHTML_data.items.forEach(i => {
-    const addedQty = i.addedAfterKOT || 0;
-    const originalQty = i.qty - addedQty;
-    t += BOLD_ON + i.qty + 'x ' + i.name + BOLD_OFF;
-    if (addedQty > 0 && originalQty > 0) t += '  (' + originalQty + ' orig + ' + addedQty + ' NEW)';
-    else if (addedQty > 0) t += '  [NEW]';
-    t += '\n';
-    if (i.note) t += '  > ' + i.note + '\n';
-  });
-
-  t += '--------------------------------\n';
-  t += CENTER + activeBranch + ' - KITCHEN - KOT #' + itemsHTML_data.kotNum + LEFT;
-  t += CUT;
-  return t;
-}
-
-// Sends the ticket to the local bridge (192.168.1.100 kitchen printer).
-// Falls back to window.print() automatically if the bridge isn't running.
-async function sendKitchenTicketSilently(plainText) {
+async function sendKitchenTicketImage(imageBase64) {
   try {
-    const res = await fetch('http://127.0.0.1:9912/print-kitchen', {
+    const res = await fetch('http://127.0.0.1:9912/print-kitchen-image', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: plainText })
+      body: JSON.stringify({ image: imageBase64 })
     });
     const data = await res.json();
     return !!data.ok;
@@ -4583,17 +4535,30 @@ async function printKitchenTicket() {
 
     </div>`;
 
-  const ticketData = {
-    type, table, kotNum, tokenNum, delAddr, custName,
-    items: currentOrder.items, fromWeb: currentOrder.fromWeb, time
-};
-const plainTicket = buildKitchenTicketPlainText(ticketData);
-const sentSilently = await sendKitchenTicketSilently(plainTicket);
+  const printArea = document.getElementById('print-area');
 
-if (!sentSilently) {
+  // print-area is normally display:none — make it visible off-screen
+  // so html2canvas can actually render and capture it
+  printArea.style.cssText = 'display:block !important; position:fixed; left:-9999px; top:0; width:380px; background:white;';
+
+  await new Promise(resolve => setTimeout(resolve, 50)); // let the browser lay it out
+
+  let sentSilently = false;
+  try {
+    const canvas = await html2canvas(printArea, { backgroundColor: '#ffffff', scale: 2 });
+    const imageBase64 = canvas.toDataURL('image/png');
+    sentSilently = await sendKitchenTicketImage(imageBase64);
+  } catch (e) {
+    console.warn('html2canvas capture failed:', e.message);
+  }
+
+  printArea.style.cssText = 'display:none;'; // hide again either way
+
+  if (!sentSilently) {
+    printArea.style.cssText = 'display:block;'; // window.print() needs it visible per your @media print rules
     window.print(); // fallback if the bridge/agent isn't running
-}
-document.getElementById('print-area').innerHTML = '';
+  }
+  printArea.innerHTML = '';
     // Ticket printed — clear the "added after KOT" markers now that kitchen has seen them
     currentOrder.items.forEach(i => { delete i.addedAfterKOT; });
     currentOrder.needsKitchenUpdate = false;
