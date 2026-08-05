@@ -4399,6 +4399,76 @@ async function completePayment() {
 }
 
 // ══════════════════════════════════
+// Silent network print to Kitchen Printer via local bridge
+// ══════════════════════════════════
+function buildKitchenTicketPlainText(itemsHTML_data) {
+  // itemsHTML_data = { type, table, kotNum, tokenNum, delAddr, custName, items, fromWeb, time }
+  const ESC = '\x1B', GS = '\x1D';
+  const INIT = ESC + '@';
+  const BOLD_ON = ESC + 'E' + '\x01';
+  const BOLD_OFF = ESC + 'E' + '\x00';
+  const BIG_ON = GS + '!' + '\x11';
+  const BIG_OFF = GS + '!' + '\x00';
+  const CENTER = ESC + 'a' + '\x01';
+  const LEFT = ESC + 'a' + '\x00';
+  const CUT = '\n\n\n\n' + GS + 'V' + '\x00';
+
+  let t = INIT;
+  t += CENTER + BOLD_ON + BIG_ON + 'CRUSTIFY\n' + BIG_OFF + BOLD_OFF;
+  t += itemsHTML_data.time + '  ' + activeBranch + '\n';
+  t += '--------------------------------\n';
+  t += LEFT + BOLD_ON;
+
+  if (itemsHTML_data.type === 'Dine-In') {
+    t += BIG_ON + itemsHTML_data.table + '\n' + BIG_OFF;
+    t += 'KOT #' + itemsHTML_data.kotNum + '   DINE-IN\n';
+  } else if (itemsHTML_data.type === 'Takeaway') {
+    t += CENTER + BIG_ON + '#' + itemsHTML_data.tokenNum + '\n' + BIG_OFF + LEFT;
+    t += 'KOT #' + itemsHTML_data.kotNum + '   TAKEAWAY   ' + itemsHTML_data.table + '\n';
+    if (itemsHTML_data.custName) t += CENTER + itemsHTML_data.custName + '\n' + LEFT;
+  } else if (itemsHTML_data.type === 'Delivery') {
+    t += (itemsHTML_data.delAddr || itemsHTML_data.table) + '\n';
+    t += 'KOT #' + itemsHTML_data.kotNum + '   DELIVERY\n';
+    if (itemsHTML_data.custName) t += itemsHTML_data.custName + '\n';
+  }
+  t += BOLD_OFF + '--------------------------------\n';
+
+  if (itemsHTML_data.fromWeb) t += BOLD_ON + '*** WEB/QR ORDER ***\n' + BOLD_OFF;
+
+  itemsHTML_data.items.forEach(i => {
+    const addedQty = i.addedAfterKOT || 0;
+    const originalQty = i.qty - addedQty;
+    t += BOLD_ON + i.qty + 'x ' + i.name + BOLD_OFF;
+    if (addedQty > 0 && originalQty > 0) t += '  (' + originalQty + ' orig + ' + addedQty + ' NEW)';
+    else if (addedQty > 0) t += '  [NEW]';
+    t += '\n';
+    if (i.note) t += '  > ' + i.note + '\n';
+  });
+
+  t += '--------------------------------\n';
+  t += CENTER + activeBranch + ' - KITCHEN - KOT #' + itemsHTML_data.kotNum + LEFT;
+  t += CUT;
+  return t;
+}
+
+// Sends the ticket to the local bridge (192.168.1.100 kitchen printer).
+// Falls back to window.print() automatically if the bridge isn't running.
+async function sendKitchenTicketSilently(plainText) {
+  try {
+    const res = await fetch('http://127.0.0.1:9912/print-kitchen', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: plainText })
+    });
+    const data = await res.json();
+    return !!data.ok;
+  } catch (e) {
+    console.warn('Print bridge not reachable, falling back to browser print:', e.message);
+    return false;
+  }
+}
+
+// ══════════════════════════════════
 // PRINT
 // ══════════════════════════════════
 async function printKitchenTicket() {
@@ -4513,16 +4583,24 @@ async function printKitchenTicket() {
 
     </div>`;
 
-  setTimeout(() => {
-    window.print();
-    document.getElementById('print-area').innerHTML = '';
+  const ticketData = {
+    type, table, kotNum, tokenNum, delAddr, custName,
+    items: currentOrder.items, fromWeb: currentOrder.fromWeb, time
+};
+const plainTicket = buildKitchenTicketPlainText(ticketData);
+const sentSilently = await sendKitchenTicketSilently(plainTicket);
+
+if (!sentSilently) {
+    window.print(); // fallback if the bridge/agent isn't running
+}
+document.getElementById('print-area').innerHTML = '';
     // Ticket printed — clear the "added after KOT" markers now that kitchen has seen them
     currentOrder.items.forEach(i => { delete i.addedAfterKOT; });
     currentOrder.needsKitchenUpdate = false;
     saveTableOrder();
     updateActionButtonsState();
     showToast('Kitchen ticket printed 🔥', 'success');
-  }, 300);
+  
 }
 
 function printReceipt(sale, isSplit=false) {
