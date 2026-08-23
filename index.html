@@ -1572,14 +1572,15 @@ create table if not exists closing_items (
 
 -- 6. BATCHES (recipe headers)
 create table if not exists batches (
-  id           text primary key,
-  name         text not null,
-  type         text not null default 'other',
-  totalprice   numeric default 0,
-  totalportion numeric default 0,
-  totalcost    numeric default 0,
-  perkgcost    numeric default 0,
-  createdat    timestamptz default now()
+  id            text primary key,
+  name          text not null,
+  type          text not null default 'other',
+  totalprice    numeric default 0,
+  totalportion  numeric default 0,
+  totalcost     numeric default 0,
+  perkgcost     numeric default 0,
+  lastproducedat timestamptz,
+  createdat     timestamptz default now()
 );
 
 -- 7. BATCH ITEMS
@@ -1660,6 +1661,10 @@ function fmtCurrency(n) {
 function fmtDate(d) {
   if (!d) return '—';
   return new Date(d).toLocaleDateString('en-PK', { day:'numeric', month:'short', year:'numeric' });
+}
+function fmtDateTime(d) {
+  if (!d) return '—';
+  return new Date(d).toLocaleString('en-PK', { day:'numeric', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit', hour12:true });
 }
 function fmtNum(n, dp=3) {
   return (parseFloat(n)||0).toFixed(dp);
@@ -2622,6 +2627,11 @@ function renderBatches() {
             ${batch.outputqty ? ` · Yield: ${fmtNum(batch.outputqty,3)} ${outputIng?.unit||''}/batch` : ''}
             ${outputIng ? ` · Current stock: ${fmtNum(outputIng.currentstock,3)} ${outputIng.unit}` : ''}
           </div>
+          <div style="font-size:12px;margin-top:4px;">
+            ${batch.lastproducedat
+              ? `<span style="color:var(--success);font-weight:600;"><i class="fas fa-clock"></i> Last made: ${fmtDateTime(batch.lastproducedat)}</span>`
+              : `<span style="color:var(--mid);"><i class="fas fa-clock"></i> Never produced yet</span>`}
+          </div>
         </div>
         <div style="text-align:right;">
           <div style="font-family:'Plus Jakarta Sans',sans-serif;font-size:20px;font-weight:800;color:var(--success);">${fmtCurrency(batch.perkgcost)} <span style="font-size:11px;font-weight:600;color:var(--mid);">/kg</span></div>
@@ -2679,6 +2689,10 @@ async function produceBatch(batchId) {
     outputIng.currentstock = safe(outputIng.currentstock) + producedQty;
     await sb.from('ingredients').update({ currentstock: outputIng.currentstock, updatedat: new Date().toISOString() }).eq('id', outputIng.id);
   }
+
+  const producedAt = new Date().toISOString();
+  await sb.from('batches').update({ lastproducedat: producedAt }).eq('id', batchId);
+  batch.lastproducedat = producedAt;
 
   renderBatches();
   renderIngredients();
