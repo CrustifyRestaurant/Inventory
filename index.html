@@ -1224,6 +1224,54 @@ tr:hover td{background:#fafafa;}
     </div>
   </div>
 </div>
+<!-- PRODUCE BATCH -->
+<div class="overlay" id="m-produce-batch">
+  <div class="modal">
+    <div class="modal-head">
+      <span class="modal-title"><i class="fas fa-industry"></i> Produce Batch</span>
+      <button class="modal-close" onclick="closeM('m-produce-batch')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="pb-batch-id">
+      <div id="pb-info" style="font-size:13px;color:var(--mid);margin-bottom:14px;"></div>
+      <div class="form-group">
+        <label class="form-label">Quantity Produced *</label>
+        <input class="form-input" id="pb-qty" type="number" step="0.001" placeholder="0.000">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Date &amp; Time Produced *</label>
+        <input class="form-input" id="pb-when" type="datetime-local">
+        <div style="font-size:11px;color:var(--mid);margin-top:4px;">Defaults to now — change this if you're logging a batch made earlier.</div>
+      </div>
+      <button class="btn btn-primary" style="width:100%;margin-top:6px;" onclick="confirmProduceBatch()">
+        <i class="fas fa-industry"></i> Confirm Production
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- EDIT PRODUCTION TIME -->
+<div class="overlay" id="m-edit-prod-time">
+  <div class="modal">
+    <div class="modal-head">
+      <span class="modal-title"><i class="fas fa-clock"></i> Edit Production Time</span>
+      <button class="modal-close" onclick="closeM('m-edit-prod-time')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="ept-batch-id">
+      <div style="font-size:12px;color:var(--mid);margin-bottom:14px;">
+        This only corrects the recorded timestamp — it does <strong>not</strong> re-adjust stock or materials.
+      </div>
+      <div class="form-group">
+        <label class="form-label">Date &amp; Time Produced *</label>
+        <input class="form-input" id="ept-when" type="datetime-local">
+      </div>
+      <button class="btn btn-primary" style="width:100%;margin-top:6px;" onclick="saveProductionTime()">
+        <i class="fas fa-save"></i> Save Corrected Time
+      </button>
+    </div>
+  </div>
+</div>
 
 <!-- MANUAL CLOSING -->
 <div class="overlay" id="m-closing">
@@ -2627,9 +2675,10 @@ function renderBatches() {
             ${batch.outputqty ? ` · Yield: ${fmtNum(batch.outputqty,3)} ${outputIng?.unit||''}/batch` : ''}
             ${outputIng ? ` · Current stock: ${fmtNum(outputIng.currentstock,3)} ${outputIng.unit}` : ''}
           </div>
-          <div style="font-size:12px;margin-top:4px;">
+          <div style="font-size:12px;margin-top:4px;display:flex;align-items:center;gap:6px;">
             ${batch.lastproducedat
-              ? `<span style="color:var(--success);font-weight:600;"><i class="fas fa-clock"></i> Last made: ${fmtDateTime(batch.lastproducedat)}</span>`
+              ? `<span style="color:var(--success);font-weight:600;"><i class="fas fa-clock"></i> Last made: ${fmtDateTime(batch.lastproducedat)}</span>
+                 <button class="btn btn-sm btn-icon" style="width:22px;height:22px;background:#faf5ff;color:var(--purple);" title="Edit production time" onclick="editProductionTime('${batch.id}')"><i class="fas fa-pencil-alt" style="font-size:10px;"></i></button>`
               : `<span style="color:var(--mid);"><i class="fas fa-clock"></i> Never produced yet</span>`}
           </div>
         </div>
@@ -2649,8 +2698,37 @@ function renderBatches() {
     </div>`;
   }).join('');
 }
+function editProductionTime(batchId) {
+  const batch = DB.batches.find(b=>b.id===batchId);
+  if (!batch || !batch.lastproducedat) return;
+  document.getElementById('ept-batch-id').value = batchId;
+  // Convert stored UTC ISO -> PK local datetime-local value
+  document.getElementById('ept-when').value = new Date(new Date(batch.lastproducedat).getTime() + 5*60*60*1000).toISOString().slice(0,16);
+  openM('m-edit-prod-time');
+}
 
-async function produceBatch(batchId) {
+async function saveProductionTime() {
+  const batchId = document.getElementById('ept-batch-id').value;
+  const batch = DB.batches.find(b=>b.id===batchId);
+  if (!batch) return;
+
+  const whenVal = document.getElementById('ept-when').value;
+  if (!whenVal) { toast('Pick a date & time','err'); return; }
+  const newProducedAt = _dtLocalToISOInv(whenVal);
+
+  setSyncStatus('busy','Saving…');
+  const { error } = await sb.from('batches').update({ lastproducedat: newProducedAt }).eq('id', batchId);
+  if (error) { toast('❌ '+error.message,'err'); setSyncStatus('ok',''); return; }
+
+  batch.lastproducedat = newProducedAt;
+
+  closeM('m-edit-prod-time');
+  renderBatches();
+  setSyncStatus('ok','Synced');
+  toast('✅ Production time updated');
+}
+
+function produceBatch(batchId) {
   const batch = DB.batches.find(b=>b.id===batchId);
   if (!batch) return;
   if (!batch.output_ingredient_id) { toast('This batch has no output ingredient linked — edit it first','err'); return; }
@@ -2659,10 +2737,29 @@ async function produceBatch(batchId) {
 
   const defaultYield = batch.outputqty || batch.totalportion || 0;
   const outputIng = DB.ingredients.find(i=>i.id===batch.output_ingredient_id);
-  const input = prompt(`How much ${outputIng?.name||'output'} are you producing? (default recipe = ${fmtNum(defaultYield,3)})`, defaultYield);
-  if (input === null) return;
-  const producedQty = safe(input);
+
+  document.getElementById('pb-batch-id').value = batchId;
+  document.getElementById('pb-info').innerHTML = `Producing <strong>${outputIng?.name||'output'}</strong> — default recipe yield: ${fmtNum(defaultYield,3)} ${outputIng?.unit||''}`;
+  document.getElementById('pb-qty').value = defaultYield;
+  // Prefill with "now" in PK time, but fully editable
+  document.getElementById('pb-when').value = new Date(Date.now() + 5*60*60*1000).toISOString().slice(0,16);
+  openM('m-produce-batch');
+}
+
+async function confirmProduceBatch() {
+  const batchId = document.getElementById('pb-batch-id').value;
+  const batch = DB.batches.find(b=>b.id===batchId);
+  if (!batch) return;
+  const items = DB.batchItems.filter(i=>i.batch_id===batchId);
+  const outputIng = DB.ingredients.find(i=>i.id===batch.output_ingredient_id);
+  const defaultYield = batch.outputqty || batch.totalportion || 0;
+
+  const producedQty = safe(document.getElementById('pb-qty').value);
   if (producedQty <= 0) { toast('Enter a quantity greater than 0','err'); return; }
+
+  const whenVal = document.getElementById('pb-when').value;
+  if (!whenVal) { toast('Pick a date & time','err'); return; }
+  const producedAt = _dtLocalToISOInv(whenVal); // reuses your existing PK-timezone helper
 
   const ratio = defaultYield > 0 ? producedQty / defaultYield : 1;
 
@@ -2690,10 +2787,10 @@ async function produceBatch(batchId) {
     await sb.from('ingredients').update({ currentstock: outputIng.currentstock, updatedat: new Date().toISOString() }).eq('id', outputIng.id);
   }
 
-  const producedAt = new Date().toISOString();
   await sb.from('batches').update({ lastproducedat: producedAt }).eq('id', batchId);
   batch.lastproducedat = producedAt;
 
+  closeM('m-produce-batch');
   renderBatches();
   renderIngredients();
   renderDashboard();
