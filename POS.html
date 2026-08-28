@@ -717,17 +717,17 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
       <div style="padding:6px 10px 0;flex-shrink:0;display:flex;gap:6px;">
         <input type="text" id="order-customer-name" placeholder="👤 Customer Name"
           style="flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:7px 10px;color:var(--text);font-size:12px;outline:none;"
-          oninput="saveTableOrder()" onblur="saveCustomerRecord()">
+          oninput="_custNameDirty=true;saveTableOrder()" onblur="saveCustomerRecord()">
         <input type="tel" id="order-customer-phone" placeholder="📞 Phone"
           style="width:130px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:7px 10px;color:var(--text);font-size:12px;outline:none;"
-          oninput="handleCustomerPhoneInput(this.value)" onblur="saveCustomerRecord()">
+          oninput="handleCustomerPhoneInput(this.value)">
       </div>
 
       <!-- DELIVERY FIELDS — only visible for Delivery orders -->
       <div id="delivery-fields" style="display:none;padding:6px 10px 0;flex-shrink:0;">
     <textarea id="delivery-address" placeholder="📍 Delivery Address (area, street, landmark)" rows="2"
       style="width:100%;background:var(--surface2);border:1px solid rgba(230,126,34,0.4);border-radius:8px;padding:7px 10px;color:var(--text);font-size:12px;resize:none;outline:none;font-family:'Outfit',sans-serif;"
-      oninput="saveTableOrder()" onblur="saveCustomerRecord()"></textarea>
+      oninput="_custAddrDirty=true;saveTableOrder()" onblur="saveCustomerRecord()"></textarea>
     <div style="display:flex;gap:6px;margin-top:5px;align-items:center;">
       <span style="font-size:13px;color:var(--text2);white-space:nowrap;">🚚 Del. Charge:</span>
       <input type="number" id="delivery-charge" placeholder="0" value="0" min="0"
@@ -2845,6 +2845,9 @@ async function openTable(tname, floor) {
   scEnabled = currentOrder.scEnabled !== undefined ? currentOrder.scEnabled : (orderType==='Dine-In');
   scPercent = currentOrder.scPct || 7;
   syncSCUI();
+  _custNameDirty = false;
+  _custAddrDirty = false;
+  _custLookedUpPhone = '';
   openOrderView(tname, orderType);
 }
 // ✅ NEW function: creates POS order record in Supabase (Delivery AND Takeaway)
@@ -3281,39 +3284,51 @@ function addItemToOrder(item, price, qty=1, note='') {
 
 // ══════════════════════════════════
 // CUSTOMER LOOKUP / SAVE (phone-based autofill)
+// The phone number is the single source of truth for Name/Address.
+// Every time it changes to a NEW complete number, Name/Address/Rider are
+// cleared first, then filled ONLY if a match is found for that number —
+// so data from a previously-typed number can never leak onto a new one.
 // ══════════════════════════════════
 let _custPhoneLookupTimer = null;
-// Tracks what THIS script auto-filled last, so switching to a different
-// phone number clears the stale auto-filled values without touching
-// anything the cashier typed in manually.
-let _custAutoFill = { phone: '', name: '', address: '', rider: '' };
+// True once the cashier has manually edited Name/Address AFTER a lookup
+// already completed for the CURRENT phone number — protects that edit
+// from being clobbered if the same number's lookup somehow re-fires.
+let _custNameDirty = false;
+let _custAddrDirty = false;
+// The phone number our fields currently correspond to (cleared+filled for).
+let _custLookedUpPhone = '';
 
 function handleCustomerPhoneInput(val) {
   saveTableOrder();
   clearTimeout(_custPhoneLookupTimer);
   const phone = (val || '').replace(/\D/g, '');
-
-  // Phone number changed from whatever we last looked up — wipe any
-  // fields that still hold OUR previous auto-fill (leave manually
-  // typed values alone) so old customer data doesn't linger.
-  if (_custAutoFill.phone && _custAutoFill.phone !== phone) {
-    const nameEl = document.getElementById('order-customer-name');
-    const addrEl = document.getElementById('delivery-address');
-    const riderSel = document.getElementById('delivery-rider');
-    if (nameEl && nameEl.value === _custAutoFill.name) nameEl.value = '';
-    if (addrEl && addrEl.value === _custAutoFill.address) addrEl.value = '';
-    if (riderSel && riderSel.value === _custAutoFill.rider) riderSel.value = '';
-    _custAutoFill = { phone: '', name: '', address: '', rider: '' };
-    saveTableOrder();
+  if (phone.length < 7) {
+    _custLookedUpPhone = '';
+    return;
   }
-
-  if (phone.length < 7) return;
   _custPhoneLookupTimer = setTimeout(() => lookupCustomerByPhone(phone), 500);
 }
 
 async function lookupCustomerByPhone(phone) {
   if (!sb || !isOnline) return;
   try {
+    const nameEl = document.getElementById('order-customer-name');
+    const addrEl = document.getElementById('delivery-address');
+    const riderSel = document.getElementById('delivery-rider');
+
+    if (phone !== _custLookedUpPhone) {
+      // Brand-new number — wipe whatever was sitting in the fields
+      // (typed manually or left from a previous number) BEFORE we know
+      // if this number has a match, so nothing can leak across numbers.
+      if (nameEl) nameEl.value = '';
+      if (addrEl) addrEl.value = '';
+      if (riderSel) riderSel.value = '';
+      _custNameDirty = false;
+      _custAddrDirty = false;
+      _custLookedUpPhone = phone;
+      saveTableOrder();
+    }
+
     let data = null;
     const { data: custRow } = await sb.from('customers')
       .select('*').eq('branch', activeBranch).eq('phone', phone).maybeSingle();
@@ -3321,7 +3336,6 @@ async function lookupCustomerByPhone(phone) {
 
     // Fallback: not in customers table yet — search past sales directly
     // (covers customers who ordered before this feature existed).
-    let pastOrderCount = 0;
     if (!data) {
       const { data: pastTx } = await sb.from('shift_transactions')
         .select('customer_name, delivery_address, created_at')
@@ -3330,38 +3344,30 @@ async function lookupCustomerByPhone(phone) {
         .order('created_at', { ascending: false })
         .limit(20);
       if (pastTx && pastTx.length) {
-        pastOrderCount = pastTx.length;
         const withName = pastTx.find(t => t.customer_name);
         const withAddr = pastTx.find(t => t.delivery_address);
         data = {
           name: withName ? withName.customer_name : '',
           address: withAddr ? withAddr.delivery_address : '',
           last_rider: '',
-          order_count: pastOrderCount
+          order_count: pastTx.length
         };
-        // Save it into customers now so next lookup is instant
         saveCustomerRecordDirect(phone, data.name, data.address, '');
       }
     }
 
-    if (!data) return;
-    const nameEl = document.getElementById('order-customer-name');
-    if (nameEl && !nameEl.value.trim()) nameEl.value = data.name || '';
-    let filledAddr = '', filledRider = '';
+    // Only proceed to fill if the phone field still holds THIS number —
+    // guards against a slow network reply landing after the cashier has
+    // already moved on to typing yet another number.
+    const stillSamePhone = (document.getElementById('order-customer-phone')?.value || '').replace(/\D/g,'') === phone;
+    if (!data || !stillSamePhone) return;
+
+    if (nameEl && !_custNameDirty && data.name) nameEl.value = data.name;
     if (currentOrder.type === 'Delivery') {
-      const addrEl = document.getElementById('delivery-address');
-      if (addrEl && !addrEl.value.trim() && data.address) { addrEl.value = data.address; filledAddr = data.address; }
-      const riderSel = document.getElementById('delivery-rider');
-      if (riderSel && !riderSel.value && data.last_rider) { riderSel.value = data.last_rider; filledRider = data.last_rider; }
+      if (addrEl && !_custAddrDirty && data.address) addrEl.value = data.address;
+      if (riderSel && !riderSel.value && data.last_rider) riderSel.value = data.last_rider;
     }
-    // Remember what we just filled so a later phone-number change can
-    // safely clear it without touching manual edits.
-    _custAutoFill = {
-      phone: phone,
-      name: (nameEl && nameEl.value === data.name) ? (data.name || '') : _custAutoFill.name,
-      address: filledAddr,
-      rider: filledRider
-    };
+
     saveTableOrder();
     const countLabel = data.order_count ? ' — ' + data.order_count + '+ past orders' : '';
     showToast('📇 Returning customer: ' + (data.name || phone) + countLabel, 'success');
@@ -3388,6 +3394,17 @@ async function saveCustomerRecord() {
     if (!existing) payload.order_count = 1;
     await sb.from('customers').upsert([payload], { onConflict: 'branch,phone' });
   } catch (e) { console.warn('saveCustomerRecord failed:', e.message); }
+}
+
+async function saveCustomerRecordDirect(phone, name, address, rider) {
+  if (!sb) return;
+  try {
+    const payload = { branch: activeBranch, phone, order_count: 1, last_order_at: new Date().toISOString() };
+    if (name) payload.name = name;
+    if (address) payload.address = address;
+    if (rider) payload.last_rider = rider;
+    await sb.from('customers').upsert([payload], { onConflict: 'branch,phone' });
+  } catch (e) { console.warn('saveCustomerRecordDirect failed:', e.message); }
 }
 
 function saveTableOrder() {
@@ -4540,6 +4557,7 @@ async function printKitchenTicket() {
   if (!currentOrder.items.length) { showToast('No items to print', 'error'); return; }
 
   saveTableOrder();
+  saveCustomerRecord(); // always push the latest name/address for this number to Supabase
 
   // Ensure the order is actually in kitchen_orders BEFORE we let the
   // cashier proceed to Print Bill / Collect & Clear.
