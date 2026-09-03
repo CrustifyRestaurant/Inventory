@@ -485,6 +485,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
 <button class="nav-btn" id="nav-expense-standalone" onclick="addExpense()" style="background:rgba(230,126,34,0.15);color:var(--orange);">🧾 Expense</button>
 <button class="nav-btn" id="nav-closing" onclick="switchView('closing')">📊 Closing</button>
 <button class="nav-btn" id="nav-history" onclick="switchView('history')">📅 History</button>
+<button class="nav-btn" id="nav-totals" onclick="switchView('totals')">📈 Totals</button>
 <button class="print-report-btn" id="nav-closeshifts" onclick="closeAllShifts()" style="background:var(--red);color:white;border-color:var(--red);font-weight:800;">
   🔒 CLOSE ALL SHIFTS & RESET
 </button>
@@ -909,6 +910,28 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
       </div>
       <div id="history-content">
         <div style="text-align:center;padding:48px;color:var(--text3);">Select a date to view shift reports</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TOTALS ONLY VIEW — pulls a single aggregate row, no transaction data -->
+  <div class="pos-view" id="view-totals">
+    <div style="max-width:100%;width:100%;padding:18px;overflow-y:auto;flex-direction:column;height:100%;">
+      <div class="section-header">
+        <div class="section-title-bar">📈 Totals — Numbers Only</div>
+        <div style="display:flex;gap:10px;align-items:center;">
+          <span style="font-size:12px;color:var(--text2);">From</span>
+          <input type="datetime-local" step="60" id="totals-date-from" onchange="syncDateRangeFromInputs('totals-date-from','totals-date-to')"
+            style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:7px 12px;color:var(--text);font-family:'Outfit',sans-serif;font-size:14px;outline:none;">
+          <span style="font-size:12px;color:var(--text2);">To</span>
+          <input type="datetime-local" step="60" id="totals-date-to" onchange="syncDateRangeFromInputs('totals-date-from','totals-date-to')"
+            style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:7px 12px;color:var(--text);font-family:'Outfit',sans-serif;font-size:14px;outline:none;">
+          <button class="refresh-btn" onclick="loadTotalsForRange(document.getElementById('totals-date-from').value, document.getElementById('totals-date-to').value)">↻ Load</button>
+        </div>
+      </div>
+      <div style="font-size:12px;color:var(--text3);margin-bottom:16px;">This tab only requests summed totals from the database — it never downloads the full transaction list, so it stays fast and cheap on egress even across months or years.</div>
+      <div id="totals-content">
+        <div style="text-align:center;padding:48px;color:var(--text3);">Pick a range and click Load</div>
       </div>
     </div>
   </div>
@@ -2635,8 +2658,7 @@ function switchView(v) {
   document.querySelectorAll('.pos-view').forEach(x => x.classList.remove('active'));
   document.querySelectorAll('.nav-btn').forEach(x => x.classList.remove('active'));
   document.getElementById('view-'+v).classList.add('active');
-  const navMap = {tables:0,delivery:1,cash:2,closing:3,history:4};
-  if (navMap[v] !== undefined) document.querySelectorAll('.nav-btn')[navMap[v]]?.classList.add('active');
+  document.getElementById('nav-'+v)?.classList.add('active');
   if (v==='cash') {
     _applySharedRangeOrDefault('cash-date-from', 'cash-date-to');
     loadCashForRange(document.getElementById('cash-date-from').value, document.getElementById('cash-date-to').value);
@@ -2652,6 +2674,10 @@ function switchView(v) {
   document.getElementById('history-branch-picker').value = activeBranch;
   loadHistoryForRange(document.getElementById('history-date-picker').value, document.getElementById('history-date-to-picker').value);
 }
+  if (v === 'totals') {
+    _applySharedRangeOrDefault('totals-date-from', 'totals-date-to');
+    loadTotalsForRange(document.getElementById('totals-date-from').value, document.getElementById('totals-date-to').value);
+  }
 }
 
 function switchViewDirect(v) {
@@ -6109,6 +6135,61 @@ async function loadHistoryForRange(fromDateTime, toDateTime) {
     console.error(e);
   }
 }
+
+// ══════════════════════════════════
+// TOTALS-ONLY TAB — one aggregate row from Postgres, never a row list.
+// Zero risk of the 1000-row PostgREST cap since nothing but numbers travel.
+// ══════════════════════════════════
+async function fetchRangeTotals(branch, fromISO, toISO) {
+  if (!sb) return null;
+  try {
+    const { data, error } = await sb.rpc('get_range_totals', {
+      p_branch: branch, p_from: fromISO, p_to: toISO
+    });
+    if (error) { console.error('get_range_totals failed:', error.message); return null; }
+    return (data && data[0]) ? data[0] : null;
+  } catch(e) {
+    console.error('fetchRangeTotals error:', e.message);
+    return null;
+  }
+}
+
+async function loadTotalsForRange(fromVal, toVal) {
+  if (!fromVal) fromVal = todayKey() + 'T00:00';
+  if (!toVal) toVal = todayKey() + 'T23:59';
+  const content = document.getElementById('totals-content');
+  content.innerHTML = '<div style="text-align:center;padding:36px;color:var(--text3);">Loading totals…</div>';
+
+  const t = await fetchRangeTotals(activeBranch, _dtLocalToISO(fromVal), _dtLocalToISO(toVal));
+  if (!t) {
+    content.innerHTML = '<div style="text-align:center;padding:36px;color:var(--red);">Could not load totals — check connection, or make sure the get_range_totals function exists in Supabase.</div>';
+    return;
+  }
+
+  const netCash = (t.cash_total||0) - (t.expense_total||0) - (t.cash_out_total||0);
+
+  content.innerHTML = `
+    <div style="font-size:12px;color:var(--text2);margin-bottom:14px;">
+      📊 Totals for ${fromVal.replace('T',' ')} → ${toVal.replace('T',' ')} — ${activeBranch}
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px;">
+      <div class="cs-card green"><div class="cs-val">Rs ${Math.round(t.shop_sales||0).toLocaleString()}</div><div class="cs-lbl">Shop Sales</div></div>
+      <div class="cs-card orange"><div class="cs-val">Rs ${Math.round(t.delivery_fees||0).toLocaleString()}</div><div class="cs-lbl">Delivery Fees</div></div>
+      <div class="cs-card orange"><div class="cs-val">${t.bills_count||0}</div><div class="cs-lbl">Bills</div></div>
+      <div class="cs-card red"><div class="cs-val">Rs ${Math.round(t.cash_total||0).toLocaleString()}</div><div class="cs-lbl">Cash Collected</div></div>
+      <div class="cs-card blue"><div class="cs-val">Rs ${Math.round(t.card_total||0).toLocaleString()}</div><div class="cs-lbl">Card Collected</div></div>
+      <div class="cs-card orange"><div class="cs-val">Rs ${Math.round(t.sc_total||0).toLocaleString()}</div><div class="cs-lbl">SC Collected</div></div>
+      <div class="cs-card red"><div class="cs-val">Rs ${Math.round(t.discount_total||0).toLocaleString()}</div><div class="cs-lbl">Discounts</div></div>
+      <div class="cs-card red"><div class="cs-val">${t.void_count||0} (Rs ${Math.round(t.void_total||0).toLocaleString()})</div><div class="cs-lbl">Voids</div></div>
+      <div class="cs-card red"><div class="cs-val">${t.return_count||0} (Rs ${Math.round(t.return_total||0).toLocaleString()})</div><div class="cs-lbl">Returns</div></div>
+      <div class="cs-card red"><div class="cs-val">Rs ${Math.round(t.expense_total||0).toLocaleString()}</div><div class="cs-lbl">Expenses</div></div>
+      <div class="cs-card red"><div class="cs-val">Rs ${Math.round(t.cash_out_total||0).toLocaleString()}</div><div class="cs-lbl">Cash Outs</div></div>
+      <div class="cs-card green"><div class="cs-val">Rs ${Math.round(netCash).toLocaleString()}</div><div class="cs-lbl">Net Cash Movement</div></div>
+    </div>
+  `;
+  showToast('Totals loaded ✅', 'success');
+}
+
 let toastTimer;
 function showToast(msg, type='success') {
   const t = document.getElementById('toast');
