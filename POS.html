@@ -784,8 +784,9 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
 
       <div class="order-footer">
   <div class="order-totals" id="order-totals"></div>
-  <div class="order-actions">
+  <div class="order-actions" style="grid-template-columns:1fr 1fr 1fr 1fr 1fr 1fr;">
     <button class="oa-btn oa-void" onclick="voidCurrentOrder()">🗑️ Void</button>
+    <button class="oa-btn" style="background:rgba(142,68,173,0.15);color:#bb77ff;border:1px solid rgba(142,68,173,0.3);" onclick="returnWholeOrder()">↩ Return</button>
     <button class="oa-btn oa-print" onclick="printKitchenTicket()">🖨️ Kitchen</button>
     <button class="oa-btn oa-recall" onclick="openRecallModal()">+ Add</button>
     <button class="oa-btn oa-split" onclick="openSplitModal()">✂️ Split</button>
@@ -1810,12 +1811,16 @@ function convertQtyToUnit(qty, fromUnit, toUnit) {
 
 async function deductInventoryForSale(sale, bizdayOverride) {
   const bizday = bizdayOverride || todayKey();
+  const isDineIn = sale.type === 'Dine-In';
   for (const item of sale.items) {
     if (item.returned) continue;
     const recipe = _recipeCache[item.name];
     if (!recipe) continue;
     for (const ing of recipe) {
       if (!ing.ingredient_id) continue;
+      // Packaging is only used for Takeaway/Delivery. If a Dine-In order later
+      // moves to a takeaway table, sale.type is already 'Takeaway' by payment time.
+      if (ing.is_packaging && isDineIn) continue;
       const rawQty = ing.qty * item.qty;
       await sbInventoryOp('deduct', {
         ingredient_id: ing.ingredient_id,
@@ -2352,7 +2357,7 @@ async function _loadActiveTables() {
       const { data: koRows } = await sb.from('kitchen_orders')
         .select('id, status').in('id', orderIds);
       (koRows || []).forEach(k => {
-        if (['PAID', 'OUT', 'VOIDED', 'CLOSED'].includes(k.status)) {
+        if (['PAID', 'OUT', 'VOIDED', 'CLOSED', 'RETURNED'].includes(k.status)) {
           closedStatusIds.add(k.id);
         }
       });
@@ -3491,6 +3496,7 @@ function renderOrderItems() {
     renderOrderTotals(); return;
   }
   const isAdmin = currentStaffRole === 'Admin' || currentStaffRole === 'Manager';
+  const wasSent = !!currentOrder.id || !!currentOrder.sentToKitchen;
   list.innerHTML = '';
   currentOrder.items.forEach((item, idx) => {
     const row = document.createElement('div');
@@ -3506,11 +3512,11 @@ function renderOrderItems() {
       <div style="display:flex;flex-direction:column;gap:3px;">
         ${!item.returned ? `
           <button class="oir-del" onclick="changeItemQty(${idx},1)" style="background:rgba(39,174,96,0.15);color:var(--green);">+</button>
-          <button class="oir-del" onclick="changeItemQty(${idx},-1)" style="background:rgba(255,255,255,0.05);color:var(--text2);">−</button>
+          <button class="oir-del" ${wasSent ? 'disabled title="Sent to kitchen — use Return"' : `onclick="changeItemQty(${idx},-1)"`} style="background:${wasSent?'rgba(255,255,255,0.03)':'rgba(255,255,255,0.05)'};color:${wasSent?'var(--text3)':'var(--text2)'};${wasSent?'opacity:0.35;cursor:not-allowed;':''}">−</button>
         ` : ''}
       </div>
       ${!item.returned ? `<button class="oir-return" onclick="returnItem(${idx})" title="Return item">↩</button>` : ''}
-      ${isAdmin && !item.returned ? `<button class="oir-del" onclick="removeItem(${idx})" title="Delete">✕</button>` : ''}
+      ${isAdmin && !item.returned && !wasSent ? `<button class="oir-del" onclick="removeItem(${idx})" title="Delete">✕</button>` : ''}
     `;
     list.appendChild(row);
   });
@@ -3743,6 +3749,8 @@ async function voidCurrentOrder() {
     deliveryAddress: '', deliveryCharge: 0, sc: 0, disc: 0, scPct: 0, discType: 'flat', discAmount: 0,
     cashReceived: 0, splitCash: 0, splitCard: 0, returnReason: reason
   });
+  // Voided AFTER prep = ingredients were used and wasted — deduct from stock.
+  deductInventoryForSale({ billNo: _voidId, items: currentOrder.items, type: currentOrder.type });
 
   if (tableToDelete) delete tableOrders[tableToDelete];
   if (tableToDelete) await _saveActiveTable(tableToDelete, null);
@@ -3756,6 +3764,62 @@ async function voidCurrentOrder() {
     sbWrite('kitchen_orders', 'update',
       { status: 'VOIDED', voided_reason: reason, voided_at: new Date().toISOString(), voided_by: currentStaff },
       { eq:[['id', idToDelete]] }
+    ).then(() => setTimeout(pollWebOrders, 1000));
+  }
+}
+
+async function returnWholeOrder() {
+  if (!currentOrder.items.length) { showToast('No items to return', 'error'); return; }
+  const wasSent = !!currentOrder.id || !!currentOrder.sentToKitchen;
+  if (wasSent) {
+    const ok = confirm('This order was sent to kitchen.\n\nOnly Return it if it was NOT prepared yet.\nIf it was already prepared, press Cancel and use Void instead.\n\nContinue with Return?');
+    if (!ok) return;
+  }
+  const adminPin = prompt('Enter Admin PIN to return this order:');
+  if (adminPin !== '7530' && adminPin !== '2314') { showToast('Wrong Admin PIN — return cancelled', 'error'); return; }
+  const reason = prompt('Reason for returning the whole order? (required)');
+  if (!reason || !reason.trim()) { showToast('Reason is required', 'error'); return; }
+
+  const food = currentOrder.items.reduce((s,i) => s + i.price * i.qty, 0);
+  const tableToDelete = currentOrder.table;
+  const idToDelete = currentOrder.id;
+
+  const _retId = genId();
+  const _retWriteRes = await sbWrite('shift_transactions', 'insert', [{
+    id: _retId, branch: activeBranch, date: todayKey(), bill_no: 'RTN',
+    type: currentOrder.type, table_loc: currentOrder.table || '',
+    items_text: currentOrder.items.map(i => `${i.qty}x ${i.name}`).join(', '),
+    subtotal: food, total: -food, method: 'return', staff: currentStaff,
+    customer_name: currentOrder.customerName || '',
+    return_reason: 'FULL ORDER RETURN: ' + reason.trim(),
+    kitchen_order_id: idToDelete || null
+  }]);
+  if (_retWriteRes && _retWriteRes.error) {
+    showToast('⚠️ Could not save the return — check your internet. Order NOT returned, still open.', 'error');
+    return;
+  }
+  completedOrders.push({
+    id: _retId, billNo: 'RTN', table: currentOrder.table, type: currentOrder.type,
+    items: [...currentOrder.items], total: -food, method: 'return',
+    time: new Date(), staff: currentStaff, branch: activeBranch,
+    customerName: currentOrder.customerName || '', customerPhone: currentOrder.customerPhone || '',
+    deliveryAddress: '', deliveryCharge: 0, sc: 0, disc: 0, scPct: 0, discType: 'flat', discAmount: 0,
+    cashReceived: 0, splitCash: 0, splitCard: 0, returnReason: 'FULL ORDER RETURN: ' + reason.trim()
+  });
+  // No inventory touch here — order wasn't prepared, so nothing was consumed to give back.
+
+  if (tableToDelete) delete tableOrders[tableToDelete];
+  if (tableToDelete) await _saveActiveTable(tableToDelete, null);
+  currentOrder = { table: null, type: 'Dine-In', items: [], id: null };
+  switchView('tables');
+  renderTableMap();
+  showToast('Order returned — ' + reason, 'error');
+
+  if (idToDelete && sb) {
+    voidedOrderIds.add(idToDelete);
+    sbWrite('kitchen_orders', 'update',
+      { status: 'RETURNED', voided_reason: 'Returned: ' + reason.trim(), voided_by: currentStaff, voided_at: new Date().toISOString() },
+      { eq: [['id', idToDelete]] }
     ).then(() => setTimeout(pollWebOrders, 1000));
   }
 }
@@ -4215,7 +4279,7 @@ function printBillOnly() {
     items: [...currentOrder.items],
     total: grand,
     method: '—',
-    time: new Date(),
+    time: currentOrder.startTime ? new Date(currentOrder.startTime) : new Date(),
     staff: currentStaff,
     branch: activeBranch,
     customerName: currentOrder.customerName || '',
@@ -4890,7 +4954,7 @@ async function updateDeliveryStatus(orderId, status, knownOrder) {
       if (sb && isOnline) {
         try {
           const { data } = await sb.from('kitchen_orders')
-            .select('id, subtotal, delivery_fee, location, items, customer_name, phone, discount, kot_no, rider').eq('id', orderId).single();
+            .select('id, subtotal, delivery_fee, location, items, customer_name, phone, discount, kot_no, rider, created_at').eq('id', orderId).single();
           ko = data;
         } catch(e) { console.warn('Live fetch failed, using cached order:', e.message); }
       }
@@ -4923,7 +4987,7 @@ async function updateDeliveryStatus(orderId, status, knownOrder) {
           id: _delSaleId,
           billNo, table: ko.location, type: 'Delivery',
           items: [], total: grandTotal, method: paymentMethod,
-          time: new Date(), staff: currentStaff, branch: activeBranch,
+          time: ko.created_at ? new Date(ko.created_at) : new Date(), staff: currentStaff, branch: activeBranch,
           customerName: ko.customer_name || '',
           customerPhone: ko.phone || '',
           deliveryAddress: ko.location || '',
@@ -4937,6 +5001,7 @@ async function updateDeliveryStatus(orderId, status, knownOrder) {
           id: _delSaleId, branch: activeBranch, date: todayKey(),
           bill_no: billNo, type: 'Delivery',
           table_loc: ko.location || '',
+          order_started_at: ko.created_at || null,
           items_text: (ko.items || '') + riderTag, // ✅ Added Rider to the text
           subtotal: subtotal,
           sc: 0, sc_pct: 0,
@@ -7258,7 +7323,7 @@ async function aLoadAllRecipes() {
           </div>
         </div>
         <div style="display:flex;flex-wrap:wrap;gap:5px;">
-          ${(r.ingredients||[]).map(ing=>`<span style="padding:3px 8px;border-radius:5px;background:#242830;font-size:12px;color:#9aa0b0;">${ing.qty}${ing.unit} ${ing.name}</span>`).join('')}
+          ${(r.ingredients||[]).map(ing=>`<span style="padding:3px 8px;border-radius:5px;background:#242830;font-size:12px;color:#9aa0b0;">${ing.is_packaging?'📦 ':''}${ing.qty}${ing.unit} ${ing.name}</span>`).join('')}
         </div>
       </div>`).join('');
   } catch(e){listEl.innerHTML='<div style="color:#c0392b;font-size:12px;padding:12px;">Error — have you created the item_recipes table in Supabase?</div>';}
@@ -7267,11 +7332,11 @@ async function aLoadAllRecipes() {
 function aLoadRecipe(itemName) {
   const list=document.getElementById('a-ing-list');list.innerHTML='';
   if (_aRecipes[itemName]&&_aRecipes[itemName].length) {
-    _aRecipes[itemName].forEach(ing=>aAddIngRow(ing.name,ing.qty,ing.unit,ing.ingredient_id||''));
+    _aRecipes[itemName].forEach(ing=>aAddIngRow(ing.name,ing.qty,ing.unit,ing.ingredient_id||'',!!ing.is_packaging));
   } else { aAddIngRow(); }
 }
 
-function aAddIngRow(name='',qty='',unit='g',ingId='') {
+function aAddIngRow(name='',qty='',unit='g',ingId='',isPkg=false) {
   const list=document.getElementById('a-ing-list');
   const row=document.createElement('div');row.className='a-ing-row';
   const opts = _invIngredients.map(i=>`<option value="${i.id}" data-unit="${i.unit}" ${i.id===ingId?'selected':''}>${i.name}</option>`).join('');
@@ -7283,6 +7348,9 @@ function aAddIngRow(name='',qty='',unit='g',ingId='') {
     <select style="width:60px;background:#1c1f27;border:1px solid rgba(255,255,255,0.07);border-radius:7px;padding:6px 5px;color:#9aa0b0;font-family:'Outfit',sans-serif;font-size:12px;outline:none;">
       ${['g','kg','ml','L','pcs','tbsp','tsp','slice'].map(u=>`<option value="${u}" ${u===unit?'selected':''}>${u}</option>`).join('')}
     </select>
+    <label title="Packaging — skipped for Dine-In" style="display:flex;align-items:center;gap:3px;font-size:11px;color:#d4af37;white-space:nowrap;cursor:pointer;">
+      <input type="checkbox" class="ing-packaging-chk" ${isPkg?'checked':''} style="accent-color:#d4af37;cursor:pointer;">📦
+    </label>
     <button onclick="this.parentElement.remove()" style="width:26px;height:26px;border-radius:6px;background:rgba(192,57,43,0.15);border:none;color:#c0392b;cursor:pointer;font-size:12px;display:flex;align-items:center;justify-content:center;flex-shrink:0;">✕</button>`;
   list.appendChild(row);
 }
@@ -7305,7 +7373,8 @@ async function aSaveRecipe() {
     const ingredient_id=ingSel.value;
     const name=ingSel.selectedOptions[0]?.textContent || '';
     const qty=parseFloat(inputs[1].value)||0,unit=inputs[2].value;
-    if(ingredient_id&&qty>0)ingredients.push({ingredient_id,name,qty,unit});
+    const is_packaging = !!row.querySelector('.ing-packaging-chk')?.checked;
+    if(ingredient_id&&qty>0)ingredients.push({ingredient_id,name,qty,unit,is_packaging});
   });
   if(!ingredients.length){showToast('Add at least one ingredient','error');return;}
 
@@ -7328,7 +7397,7 @@ async function aSaveRecipe() {
 function aEditRecipe(itemName, ingredients) {
   document.getElementById('a-recipe-sel').value=itemName;
   const list=document.getElementById('a-ing-list');list.innerHTML='';
-  ingredients.forEach(ing=>aAddIngRow(ing.name,ing.qty,ing.unit,ing.ingredient_id||''));
+  ingredients.forEach(ing=>aAddIngRow(ing.name,ing.qty,ing.unit,ing.ingredient_id||'',!!ing.is_packaging));
   showToast('Editing: '+itemName,'success');
 }
 
