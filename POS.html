@@ -457,6 +457,14 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
   </div>
 </div>
 
+<!-- CASHIER HAND-OFF: shown after end-of-shift report is submitted. Only a button, no data. -->
+<div id="handoff-overlay" style="display:none;position:fixed;inset:0;z-index:9000;background:#111318;align-items:center;justify-content:center;flex-direction:column;text-align:center;padding:24px;">
+  <div style="font-family:'Outfit',sans-serif;font-size:26px;font-weight:900;color:white;margin-bottom:6px;">Report Submitted ✅</div>
+  <div style="font-family:'Outfit',sans-serif;font-size:14px;color:#9aa0b0;margin-bottom:28px;">Press the button below to close the branch.</div>
+  <button onclick="closeAllShifts()" style="padding:18px 36px;border-radius:12px;background:var(--red);color:white;border:none;font-family:'Outfit',sans-serif;font-size:18px;font-weight:900;letter-spacing:1px;text-transform:uppercase;cursor:pointer;box-shadow:0 4px 0 var(--dark-red);">🔒 CLOSE ALL SHIFTS</button>
+  <button onclick="location.reload()" style="margin-top:18px;padding:10px 22px;border-radius:9px;background:transparent;color:#9aa0b0;border:1px solid rgba(255,255,255,0.15);font-family:'Outfit',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">Just log out (don't close branch)</button>
+</div>
+
 <!-- LOGIN -->
 <div id="login-screen">
   <div class="login-box">
@@ -1782,6 +1790,13 @@ async function doLogout() {
   if (tableTimerInterval) clearInterval(tableTimerInterval);
 
   await saveShiftReport();
+  window._shiftReportSaved = true;
+
+  // Cashiers: no print prompt, no reload. Show the hand-off screen with only the close button.
+  if (currentStaffRole !== 'Admin' && currentStaffRole !== 'Manager') {
+    document.getElementById('handoff-overlay').style.display = 'flex';
+    return;
+  }
 
   const perms = currentStaffPermissions || {};
   const canPrintLogout = currentStaffRole === 'Admin' || currentStaffRole === 'Manager' || perms.print_logout !== false;
@@ -6591,7 +6606,7 @@ async function closeAllShifts() {
     if (!confirm(`⚠️ ${activeTables} table(s) still have open orders!\n\nThese will be marked as unpaid/void. Continue?`)) return;
   }
 
-  await saveShiftReport();
+  if (!window._shiftReportSaved) await saveShiftReport();
 
   // Routed through sbWrite so this queues + retries when offline instead of
   // silently vanishing — an offline close used to leave these orders open
@@ -6654,8 +6669,10 @@ async function closeAllShifts() {
     </div>
   `;
 
+  const _isAdminCloser = currentStaffRole === 'Admin' || currentStaffRole === 'Manager';
+  if (!_isAdminCloser) document.getElementById('print-area').innerHTML = '';
   setTimeout(() => {
-    window.print();
+    if (_isAdminCloser) window.print();
     setTimeout(async () => {
       if (_closeGotQueued || !isOnline) {
         showToast('⚠️ Offline — closure queued but NOT yet synced. Data kept locally. Retry "Close Shifts" once online.', 'error');
