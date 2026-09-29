@@ -3591,7 +3591,7 @@ function renderOrderItems() {
       <div style="display:flex;flex-direction:column;gap:3px;">
         ${!item.returned ? `
           <button class="oir-del" onclick="changeItemQty(${idx},1)" style="background:rgba(39,174,96,0.15);color:var(--green);">+</button>
-          <button class="oir-del" ${wasSent ? 'disabled title="Sent to kitchen — use Return"' : `onclick="changeItemQty(${idx},-1)"`} style="background:${wasSent?'rgba(255,255,255,0.03)':'rgba(255,255,255,0.05)'};color:${wasSent?'var(--text3)':'var(--text2)'};${wasSent?'opacity:0.35;cursor:not-allowed;':''}">−</button>
+          <button class="oir-del" ${(wasSent && !(item.addedAfterKOT>0)) ? 'disabled title="Sent to kitchen — use Return"' : `onclick="changeItemQty(${idx},-1)"`} style="background:${(wasSent && !(item.addedAfterKOT>0))?'rgba(255,255,255,0.03)':'rgba(255,255,255,0.05)'};color:${(wasSent && !(item.addedAfterKOT>0))?'var(--text3)':'var(--text2)'};${(wasSent && !(item.addedAfterKOT>0))?'opacity:0.35;cursor:not-allowed;':''}">−</button>
         ` : ''}
       </div>
       ${!item.returned ? `<button class="oir-return" onclick="returnItem(${idx})" title="Return item">↩</button>` : ''}
@@ -3603,7 +3603,21 @@ function renderOrderItems() {
 }
 
 function changeItemQty(idx, d) {
-  if (d < 0) { requestItemAdjustment(idx, 'decrease', d); return; }
+  if (d < 0) {
+    const it = currentOrder.items[idx];
+    // Added after the kitchen ticket and not yet re-printed: kitchen never saw it, so free to reduce
+    if ((it.addedAfterKOT || 0) > 0) {
+      it.qty += d;
+      it.addedAfterKOT += d;
+      if (it.addedAfterKOT <= 0) delete it.addedAfterKOT;
+      if (it.qty <= 0) currentOrder.items.splice(idx, 1);
+      if (!currentOrder.items.some(i => i.addedAfterKOT > 0)) currentOrder.needsKitchenUpdate = false;
+      saveTableOrder(); renderOrderItems();
+      return;
+    }
+    requestItemAdjustment(idx, 'decrease', d);
+    return;
+  }
   const wasSentAlready = !!currentOrder.id || !!currentOrder.sentToKitchen;
   const item = currentOrder.items[idx];
   item.qty += d;
