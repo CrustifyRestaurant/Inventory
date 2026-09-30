@@ -1180,6 +1180,28 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
   </div>
 </div>
 
+<!-- ADMIN: EDIT CASHIER'S REPORT -->
+<div class="modal-backdrop" id="xc-edit-modal">
+  <div class="modal-box" style="max-width:420px;">
+    <div class="modal-title">✏️ Edit Cashier's Report</div>
+    <div class="modal-sub" id="xce-sub"></div>
+    <div class="of-label">Cash amount collected (Rs)</div>
+    <input class="of-input" type="number" id="xce-cash" min="0" placeholder="0">
+    <div class="of-label">Online amount (Rs)</div>
+    <input class="of-input" type="number" id="xce-online" min="0" placeholder="0">
+    <div class="of-label" style="display:flex;justify-content:space-between;align-items:center;">
+      <span>Expenses</span>
+      <span style="color:var(--orange);font-weight:800;">Total: <span id="xce-exp-total">Rs 0</span></span>
+    </div>
+    <div id="xce-exp-list" style="margin-bottom:8px;"></div>
+    <button type="button" onclick="xceAddRow()" style="width:100%;padding:8px;border-radius:8px;background:rgba(39,174,96,0.1);border:1px dashed rgba(39,174,96,0.3);color:var(--green);font-family:'Outfit',sans-serif;font-size:12px;font-weight:700;cursor:pointer;margin-bottom:12px;">+ Add expense line</button>
+    <div class="modal-actions">
+      <button class="modal-cancel" onclick="closeModal('xc-edit-modal')">Cancel</button>
+      <button class="modal-confirm" id="xce-save-btn" onclick="saveXcEdit()">Save Changes</button>
+    </div>
+  </div>
+</div>
+
 <!-- RECALL MODAL -->
 <div class="modal-backdrop" id="recall-modal">
   <div class="modal-box" style="max-width:420px;">
@@ -1542,12 +1564,14 @@ function _deliveryFeeHeldByRider(o) {
   // "Out" button (updateDeliveryStatus) — that's the only path that ever
   // creates a kitchen_orders row for a Delivery order, so kitchen_order_id
   // is the reliable signal for "rider collected this fee, not us."
-  if (o.type !== 'Delivery') return 0;
-  const hasKitchenOrder = o.kitchenOrderId || o.kitchen_order_id;
-  return hasKitchenOrder ? (o.deliveryCharge || o.delivery_charge || 0) : 0;
+  return 0; // riders return the delivery fee to the shop, so nothing is held back
 }
 function sumDeliveryFeesHeldByRider(orders) {
   return (orders || []).reduce((s,o) => s + _deliveryFeeHeldByRider(o), 0);
+}
+function _isFinanceExpense(o) {
+  const s = o.itemsText || o.items_text || o.expenseDesc || (o.items && o.items[0] && o.items[0].name) || '';
+  return /^\s*\[FINANCE\]/i.test(s);
 }
 function computeCashInHand(orders, opening) {
   let cash = opening || 0;
@@ -1556,7 +1580,7 @@ function computeCashInHand(orders, opening) {
     else if (o.method === 'cash-in')  cash += o.total;
     else if (o.method === 'split')    cash += (o.splitCash || o.split_cash || 0);
     else if (o.method === 'cash-out') cash -= Math.abs(o.total);
-    else if (o.method === 'expense')  cash -= Math.abs(o.total);
+    else if (o.method === 'expense' && !_isFinanceExpense(o)) cash -= Math.abs(o.total);
     cash -= _deliveryFeeHeldByRider(o);
   });
   return Math.round(cash);
@@ -3591,7 +3615,7 @@ function renderOrderItems() {
       <div style="display:flex;flex-direction:column;gap:3px;">
         ${!item.returned ? `
           <button class="oir-del" onclick="changeItemQty(${idx},1)" style="background:rgba(39,174,96,0.15);color:var(--green);">+</button>
-          <button class="oir-del" ${(wasSent && !(item.addedAfterKOT>0)) ? 'disabled title="Sent to kitchen — use Return"' : `onclick="changeItemQty(${idx},-1)"`} style="background:${(wasSent && !(item.addedAfterKOT>0))?'rgba(255,255,255,0.03)':'rgba(255,255,255,0.05)'};color:${(wasSent && !(item.addedAfterKOT>0))?'var(--text3)':'var(--text2)'};${(wasSent && !(item.addedAfterKOT>0))?'opacity:0.35;cursor:not-allowed;':''}">−</button>
+          <button class="oir-del" ${wasSent ? 'disabled title="Sent to kitchen — use Return"' : `onclick="changeItemQty(${idx},-1)"`} style="background:${wasSent?'rgba(255,255,255,0.03)':'rgba(255,255,255,0.05)'};color:${wasSent?'var(--text3)':'var(--text2)'};${wasSent?'opacity:0.35;cursor:not-allowed;':''}">−</button>
         ` : ''}
       </div>
       ${!item.returned ? `<button class="oir-return" onclick="returnItem(${idx})" title="Return item">↩</button>` : ''}
@@ -3603,21 +3627,7 @@ function renderOrderItems() {
 }
 
 function changeItemQty(idx, d) {
-  if (d < 0) {
-    const it = currentOrder.items[idx];
-    // Added after the kitchen ticket and not yet re-printed: kitchen never saw it, so free to reduce
-    if ((it.addedAfterKOT || 0) > 0) {
-      it.qty += d;
-      it.addedAfterKOT += d;
-      if (it.addedAfterKOT <= 0) delete it.addedAfterKOT;
-      if (it.qty <= 0) currentOrder.items.splice(idx, 1);
-      if (!currentOrder.items.some(i => i.addedAfterKOT > 0)) currentOrder.needsKitchenUpdate = false;
-      saveTableOrder(); renderOrderItems();
-      return;
-    }
-    requestItemAdjustment(idx, 'decrease', d);
-    return;
-  }
+  if (d < 0) { requestItemAdjustment(idx, 'decrease', d); return; }
   const wasSentAlready = !!currentOrder.id || !!currentOrder.sentToKitchen;
   const item = currentOrder.items[idx];
   item.qty += d;
@@ -5116,7 +5126,7 @@ async function updateDeliveryStatus(orderId, status, knownOrder) {
         }
 
         completedOrders.push(sale);
-        if (paymentMethod === 'cash') cashInHand += (subtotal - discount); // Rider keeps the delFee
+        if (paymentMethod === 'cash') cashInHand += grandTotal; // fee comes back to the shop
         document.getElementById('bar-cash').textContent = 'Rs ' + cashInHand;
         saveTodaySales();
       }
@@ -5260,47 +5270,35 @@ async function addCashIn() {
   saveTodaySales(); renderCashView(); showToast('Cash In: Rs '+amt,'success');
 }
 async function addExpense() {
-  const desc = prompt('Expense description (e.g. Stationery, Cleaning, Repair):');
-  if (!desc || !desc.trim()) { showToast('Description required', 'error'); return; }
-  
-  const amtStr = prompt('Expense amount (Rs):');
-  const amt = parseFloat(amtStr) || 0;
+  const kind = prompt('Expense type?\n\n1 = Slip expense (paid from till)\n2 = Finance expense (paid by owner from bank)\n\nType 1 or 2:');
+  if (kind === null) return;
+  if (kind.trim() !== '1' && kind.trim() !== '2') { showToast('Please enter 1 or 2', 'error'); return; }
+  const isFinance = kind.trim() === '2';
+
+  const rawDesc = prompt('Expense description (e.g. Stationery, Cleaning, Repair):');
+  if (!rawDesc || !rawDesc.trim()) { showToast('Description required', 'error'); return; }
+  const desc = (isFinance ? '[FINANCE] ' : '') + rawDesc.trim();
+
+  const amt = parseFloat(prompt('Expense amount (Rs):')) || 0;
   if (!amt || amt <= 0) { showToast('Valid amount required', 'error'); return; }
-  
-  if (amt > cashInHand) {
+
+  if (!isFinance && amt > cashInHand) {
     if (!confirm('⚠️ Expense (Rs ' + amt + ') exceeds cash in drawer (Rs ' + cashInHand + ').\n\nRecord anyway?')) return;
   }
 
   const _expId = genId();
   const expenseEntry = {
-    id: _expId,
-    billNo: 'EXP',
-    table: '',
-    type: 'Expense',
-    items: [{ name: desc.trim(), price: amt, qty: 1, note: '' }],
-    total: -amt,
-    method: 'expense',
-    time: new Date(),
-    staff: currentStaff,
-    branch: activeBranch,
-    sc: 0,
-    disc: 0,
-    expenseDesc: desc.trim()
+    id: _expId, billNo: 'EXP', table: '', type: 'Expense',
+    items: [{ name: desc, price: amt, qty: 1, note: '' }],
+    total: -amt, method: 'expense', time: new Date(),
+    staff: currentStaff, branch: activeBranch, sc: 0, disc: 0, expenseDesc: desc
   };
 
   const _expWriteRes = await sbWrite('shift_transactions', 'insert', [{
-    id: _expId,
-    branch: activeBranch,
-    date: todayKey(),
-    bill_no: 'EXP',
-    type: 'Expense',
-    table_loc: '',
-    items_text: desc.trim(),
-    subtotal: amt,
-    total: -amt,
-    method: 'expense',
-    staff: currentStaff,
-    return_reason: desc.trim()
+    id: _expId, branch: activeBranch, date: todayKey(),
+    bill_no: 'EXP', type: 'Expense', table_loc: '',
+    items_text: desc, subtotal: amt, total: -amt,
+    method: 'expense', staff: currentStaff, return_reason: desc
   }]);
   if (_expWriteRes && _expWriteRes.error) {
     showToast('⚠️ Could not save expense — check your internet. Not recorded.', 'error');
@@ -5308,11 +5306,11 @@ async function addExpense() {
   }
   completedOrders.push(expenseEntry);
 
-  cashInHand -= amt;
+  if (!isFinance) cashInHand -= amt;   // finance expenses never touch the drawer
   document.getElementById('bar-cash').textContent = 'Rs ' + cashInHand;
   saveTodaySales();
   renderCashView();
-  showToast('🧾 Expense: Rs ' + amt + ' — ' + desc.trim(), 'error');
+  showToast((isFinance ? '🏦 Finance expense: Rs ' : '🧾 Slip expense: Rs ') + amt + ' — ' + rawDesc.trim(), 'error');
 }
 
 async function addCashOut() {
@@ -5538,7 +5536,7 @@ async function renderClosingReport() {
   const deletedDel = sales.filter(t => t.method === 'deleted-delivery');
   const deletedDelTotal = deletedDel.reduce((s,t) => s + Math.abs(t.total), 0);
   const cashOuts = txs.filter(t => t.method === 'cash-out').reduce((s,t) => s + Math.abs(t.total), 0);
-  const expenses = sales.filter(t => t.method === 'expense').reduce((s,t) => s + Math.abs(t.total), 0);
+  const expenses = sales.filter(t => t.method === 'expense' && !/^\s*\[FINANCE\]/i.test(t.items_text || '')).reduce((s,t) => s + Math.abs(t.total), 0);
   const totalDelCharges = deliveryFeesOnly;
   const avg = billsOnly.length > 0 ? Math.round(shopTotal/billsOnly.length) : 0;
 
@@ -6373,6 +6371,10 @@ function declAddExpenseRow() {
   row.className = 'decl-exp-row';
   row.style.cssText = 'display:flex;gap:6px;margin-bottom:6px;';
   row.innerHTML = `
+    <select class="decl-exp-type" style="width:92px;background:var(--surface2);border:1px solid var(--border);border-radius:9px;padding:9px 6px;color:var(--text);font-family:'Outfit',sans-serif;font-size:12px;outline:none;">
+      <option value="slip">Slip (till)</option>
+      <option value="finance">Finance</option>
+    </select>
     <input type="text" class="decl-exp-desc" placeholder="What was it for? e.g. Gas cylinder"
       style="flex:1;min-width:0;background:var(--surface2);border:1px solid var(--border);border-radius:9px;padding:9px 11px;color:var(--text);font-family:'Outfit',sans-serif;font-size:13px;outline:none;">
     <input type="number" class="decl-exp-amt" min="0" placeholder="Rs" oninput="declUpdateExpTotal()"
@@ -6407,10 +6409,11 @@ async function submitDeclaration() {
     const amtV = row.querySelector('.decl-exp-amt').value;
     if (!desc && amtV === '') return; // untouched row — ignore
     if (!desc || amtV === '' || isNaN(Number(amtV)) || Number(amtV) <= 0) { expBad = true; return; }
-    expItems.push({ desc: desc, amount: Number(amtV) });
+    const type = row.querySelector('.decl-exp-type').value;
+    expItems.push({ desc: desc, amount: Number(amtV), type: type });
   });
   if (expBad) { showToast('Each expense needs a description and an amount above 0', 'error'); return; }
-  const exp = expItems.reduce((s, i) => s + i.amount, 0);
+  const exp = expItems.filter(i => i.type !== 'finance').reduce((s, i) => s + i.amount, 0);
   if (!confirm('Submit and log out?\n\nCash: Rs ' + cash + '\nOnline: Rs ' + online + '\nExpenses: Rs ' + exp + (expItems.length ? '\n' + expItems.map(i => '  • ' + i.desc + ' — Rs ' + i.amount).join('\n') : '') + '\n\nYou cannot change these afterwards.')) return;
   const btn = document.getElementById('decl-submit-btn');
   btn.disabled = true;
@@ -6428,12 +6431,87 @@ async function submitDeclaration() {
   _declResolve = null;
 }
 
+let _xceId = null;
+function xceAddRow(desc, amt, type) {
+  const row = document.createElement('div');
+  row.className = 'xce-row';
+  row.style.cssText = 'display:flex;gap:6px;margin-bottom:6px;';
+  row.innerHTML = `
+    <select class="xce-type" style="width:92px;background:var(--surface2);border:1px solid var(--border);border-radius:9px;padding:9px 6px;color:var(--text);font-family:'Outfit',sans-serif;font-size:12px;outline:none;">
+      <option value="slip">Slip (till)</option>
+      <option value="finance">Finance</option>
+    </select>
+    <input type="text" class="xce-desc" placeholder="What was it for?"
+      style="flex:1;min-width:0;background:var(--surface2);border:1px solid var(--border);border-radius:9px;padding:9px 11px;color:var(--text);font-family:'Outfit',sans-serif;font-size:13px;outline:none;">
+    <input type="number" class="xce-amt" min="0" placeholder="Rs" oninput="xceUpdateTotal()"
+      style="width:90px;background:var(--surface2);border:1px solid var(--border);border-radius:9px;padding:9px 11px;color:var(--orange);font-family:'Outfit',sans-serif;font-size:14px;font-weight:700;outline:none;text-align:center;">
+    <button type="button" onclick="this.parentElement.remove();xceUpdateTotal();"
+      style="width:34px;border-radius:8px;background:rgba(192,57,43,0.15);border:none;color:var(--red);cursor:pointer;font-size:13px;">✕</button>`;
+  row.querySelector('.xce-desc').value = desc || '';
+  row.querySelector('.xce-type').value = (type === 'finance') ? 'finance' : 'slip';
+  row.querySelector('.xce-amt').value = (amt === undefined || amt === null) ? '' : amt;
+  document.getElementById('xce-exp-list').appendChild(row);
+  xceUpdateTotal();
+}
+function xceUpdateTotal() {
+  let t = 0;
+  document.querySelectorAll('.xce-amt').forEach(i => { t += Number(i.value) || 0; });
+  document.getElementById('xce-exp-total').textContent = 'Rs ' + Math.round(t).toLocaleString('en-PK');
+}
+function openXcEdit(id) {
+  if (currentStaffRole !== 'Admin') { showToast('Admin only', 'error'); return; }
+  const d = _xcDecls.find(x => String(x.id) === String(id));
+  if (!d) { showToast('Report not found — click Load and retry', 'error'); return; }
+  _xceId = d.id;
+  document.getElementById('xce-sub').textContent = d.staff + ' — shift ended ' + new Date(d.shift_end).toLocaleString('en-PK');
+  document.getElementById('xce-cash').value = d.cash_amount;
+  document.getElementById('xce-online').value = d.online_amount;
+  document.getElementById('xce-exp-list').innerHTML = '';
+  const items = Array.isArray(d.expense_items) ? d.expense_items : [];
+  if (items.length) items.forEach(i => xceAddRow(i.desc, i.amount, i.type)); else xceAddRow();
+  document.getElementById('xc-edit-modal').classList.add('open');
+}
+async function saveXcEdit() {
+  if (currentStaffRole !== 'Admin' || !_xceId) return;
+  if (!isOnline) { showToast('No internet connection', 'error'); return; }
+  const cashV = document.getElementById('xce-cash').value, onlineV = document.getElementById('xce-online').value;
+  if ([cashV, onlineV].some(v => v === '' || isNaN(Number(v)) || Number(v) < 0)) { showToast('Enter cash and online amounts (use 0 if none)', 'error'); return; }
+  const expItems = [];
+  let bad = false;
+  document.querySelectorAll('.xce-row').forEach(row => {
+    const desc = row.querySelector('.xce-desc').value.trim();
+    const amtV = row.querySelector('.xce-amt').value;
+    if (!desc && amtV === '') return;
+    if (!desc || amtV === '' || isNaN(Number(amtV)) || Number(amtV) <= 0) { bad = true; return; }
+    expItems.push({ desc: desc, amount: Number(amtV), type: row.querySelector('.xce-type').value });
+  });
+  if (bad) { showToast('Each expense needs a description and an amount above 0', 'error'); return; }
+  const exp = expItems.filter(i => i.type !== 'finance').reduce((s, i) => s + i.amount, 0);
+  if (!confirm('Save these figures?\n\nCash: Rs ' + Number(cashV) + '\nOnline: Rs ' + Number(onlineV) + '\nExpenses: Rs ' + exp)) return;
+
+  const btn = document.getElementById('xce-save-btn');
+  btn.disabled = true;
+  const { data, error } = await sb.from('cashier_declarations').update({
+    cash_amount: Number(cashV), online_amount: Number(onlineV),
+    expenses_amount: exp, expense_items: expItems
+  }).eq('id', _xceId).select();
+  btn.disabled = false;
+  if (error || !data || !data.length) {
+    showToast('Save failed — database may be blocking updates (see note)', 'error');
+    console.error('xc edit failed', error);
+    return;
+  }
+  closeModal('xc-edit-modal');
+  showToast('Cashier report updated ✅', 'success');
+  loadCrossCheck();
+}
+
 let _xcRows = [], _xcOpening = 0, _xcDecls = [];
 function _xcExpDetail(d) {
   const items = Array.isArray(d.expense_items) ? d.expense_items : [];
   if (!items.length) return '';
   return '<div style="font-size:11px;font-weight:500;color:var(--text2);margin-top:4px;line-height:1.6;">' +
-    items.map(i => _xcEsc(i.desc) + ' — Rs ' + Number(i.amount).toLocaleString('en-PK')).join('<br>') + '</div>';
+    items.map(i => (i.type === 'finance' ? '🏦 ' : '') + _xcEsc(i.desc) + ' — Rs ' + Number(i.amount).toLocaleString('en-PK') + (i.type === 'finance' ? ' (finance)' : '')).join('<br>') + '</div>';
 }
 const _XC_NON_BILL = ['cash-in','cash-out','void','return','expense','discarded','deleted-delivery','item-void'];
 function _xcEsc(s){ return String(s==null?'':s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
@@ -6457,12 +6535,12 @@ async function _xcFetchAll(fromISO, toISO, staff) {
 function _xcCalc(rows) {
   const s = (arr, f) => arr.reduce((a, t) => a + f(t), 0);
   const bills = rows.filter(t => !_XC_NON_BILL.includes(t.method));
-  const held = t => (t.type === 'Delivery' && t.kitchen_order_id) ? (t.delivery_charge || 0) : 0; // rider keeps fee
+  const held = t => 0; // riders return the fee to the shop
   const cash = s(bills.filter(t => t.method === 'cash'), t => (t.total || 0) - held(t))
              + s(bills.filter(t => t.method === 'split'), t => t.split_cash || 0);
   const online = s(bills.filter(t => ['jazzcash','card','bank','foodpanda'].includes(t.method)), t => t.total || 0)
                + s(bills.filter(t => t.method === 'split'), t => t.split_card || 0);
-  const exp = s(rows.filter(t => t.method === 'expense'), t => Math.abs(t.total || 0));
+  const exp = s(rows.filter(t => t.method === 'expense' && !/^\s*\[FINANCE\]/i.test(t.items_text || '')), t => Math.abs(t.total || 0));
   return { cash, online, exp };
 }
 
@@ -6508,9 +6586,9 @@ function renderCrossCheck() {
   const fmtT = v => new Date(v).toLocaleString('en-PK', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit', hour12:true });
 
   const bills = rows.filter(t => !_XC_NON_BILL.includes(t.method));
-  const net = sum(bills, t => (t.total || 0) - (t.type === 'Delivery' ? (t.delivery_charge || 0) : 0));
+  const net = sum(bills, t => t.total || 0);
   const calc = _xcCalc(rows);
-  const mapped = rows.map(t => ({ total: t.total, method: t.method, splitCash: t.split_cash || 0, type: t.type, deliveryCharge: t.delivery_charge || 0, kitchenOrderId: t.kitchen_order_id }));
+  const mapped = rows.map(t => ({ itemsText: t.items_text, total: t.total, method: t.method, splitCash: t.split_cash || 0, type: t.type, deliveryCharge: t.delivery_charge || 0, kitchenOrderId: t.kitchen_order_id }));
   const expected = staff ? null : computeCashInHand(mapped, _xcOpening);
 
   const diffCell = (say, pos) => {
@@ -6524,7 +6602,7 @@ function renderCrossCheck() {
   const declRows = decls.map(d => {
     const items = [['Cash', d.cash_amount, d._pos.cash], ['Online', d.online_amount, d._pos.online], ['Expenses', d.expenses_amount, d._pos.exp]];
     return items.map((it, i) => `<tr${i === 0 ? ' style="border-top:2px solid var(--border);"' : ''}>
-      ${i === 0 ? `<td rowspan="3" style="font-weight:700;vertical-align:top;">${_xcEsc(d.staff)}</td><td rowspan="3" style="font-size:12px;color:var(--text2);vertical-align:top;">${d.shift_start ? fmtT(d.shift_start) : '?'}<br>→ ${fmtT(d.shift_end)}</td>` : ''}
+      ${i === 0 ? `<td rowspan="3" style="font-weight:700;vertical-align:top;">${_xcEsc(d.staff)}${currentStaffRole === 'Admin' ? `<br><button onclick="openXcEdit('${d.id}')" style="margin-top:6px;padding:4px 10px;border-radius:6px;background:rgba(142,68,173,0.15);border:1px solid rgba(142,68,173,0.4);color:#bb77ff;font-family:'Outfit',sans-serif;font-size:11px;font-weight:700;cursor:pointer;">✏️ Edit</button>` : ''}</td><td rowspan="3" style="font-size:12px;color:var(--text2);vertical-align:top;">${d.shift_start ? fmtT(d.shift_start) : '?'}<br>→ ${fmtT(d.shift_end)}</td>` : ''}
       <td style="font-weight:600;">${it[0]}${it[0] === 'Expenses' ? _xcExpDetail(d) : ''}</td>
       <td style="text-align:right;font-weight:700;color:var(--gold);">${R(it[1])}</td>
       <td style="text-align:right;font-weight:700;color:var(--green);">${R(it[2])}</td>
@@ -6556,6 +6634,26 @@ function renderCrossCheck() {
       </table>
     </div>`;
   const by = m => rows.filter(t => t.method === m);
+  const _isFin = t => /^\s*\[FINANCE\]/i.test(t.items_text || '');
+  const slipTotal = sum(by('expense').filter(t => !_isFin(t)), t => Math.abs(t.total));
+  const finTotal  = sum(by('expense').filter(_isFin), t => Math.abs(t.total));
+  const bankTotal = sum(bills.filter(t => t.method === 'bank'), t => t.total || 0);
+  const onlineTotal = sum(bills.filter(t => ['jazzcash','card','foodpanda'].includes(t.method)), t => t.total || 0)
+                    + sum(bills.filter(t => t.method === 'split'), t => t.split_card || 0);
+  const cashTotal = net - onlineTotal - bankTotal;
+  const monthClose = cashTotal + onlineTotal + bankTotal - slipTotal - finTotal;
+  const sumRow = (label, val, color) => `<div style="display:flex;justify-content:space-between;padding:9px 16px;border-bottom:1px solid rgba(255,255,255,0.05);font-size:14px;"><span>${label}</span><span style="font-weight:800;color:${color || 'var(--text)'};">${R(val)}</span></div>`;
+  const monthSummaryHTML = `
+    <div class="cb-section" style="margin-bottom:14px;max-width:460px;">
+      <div class="cb-head">📒 Summary for selected period</div>
+      ${sumRow('Gross Sale', net, 'var(--green)')}
+      ${sumRow('Cash', cashTotal, 'var(--green)')}
+      ${sumRow('Online (JazzCash / Card / FoodPanda)', onlineTotal, 'var(--blue)')}
+      ${sumRow('Banking (Bank transfer)', bankTotal, 'var(--blue)')}
+      ${sumRow('Slip Expense (from till)', slipTotal, 'var(--red)')}
+      ${sumRow('Finance Expense (owner, bank)', finTotal, 'var(--red)')}
+      <div style="display:flex;justify-content:space-between;padding:12px 16px;font-size:16px;font-weight:900;background:var(--surface2);"><span>Month Close</span><span style="color:var(--orange);">${R(monthClose)}</span></div>
+    </div>`;
 
   content.innerHTML = `
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px;margin-bottom:18px;">
@@ -6566,6 +6664,7 @@ function renderCrossCheck() {
       <div class="cs-card green"><div class="cs-val">${expected === null ? '—' : R(expected)}</div><div class="cs-lbl">Expected in Drawer${staff ? ' (All staff only)' : ''}</div></div>
     </div>
 
+    ${monthSummaryHTML}
     ${missing.length ? `<div style="background:rgba(230,126,34,0.12);border:1px solid rgba(230,126,34,0.4);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:var(--orange);">⚠️ No end-of-shift report from: <b>${missing.map(_xcEsc).join(', ')}</b> (still working, or logged out without submitting — Admin logouts aren't asked).</div>` : ''}
 
     <div class="cb-section" style="margin-bottom:14px;">
