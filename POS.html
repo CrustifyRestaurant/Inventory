@@ -1081,38 +1081,31 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
     </div>
 
     <!-- By Amount -->
-    <div id="split-amount-section" style="display:none;">
-      <div style="background:var(--surface2);border-radius:10px;padding:14px;margin-bottom:14px;text-align:center;">
-        <div style="font-size:12px;color:var(--text3);margin-bottom:4px;">ORDER TOTAL</div>
-        <div style="font-size:28px;font-weight:800;color:var(--orange);" id="split-order-total">Rs 0</div>
-      </div>
-      <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
-        <span style="font-size:14px;color:var(--text2);font-weight:600;white-space:nowrap;">Split between</span>
-        <button onclick="changeSplitPeople(-1)" style="width:34px;height:34px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:20px;cursor:pointer;">−</button>
-        <span id="split-people-count" style="font-size:24px;font-weight:800;min-width:30px;text-align:center;">2</span>
-        <button onclick="changeSplitPeople(1)" style="width:34px;height:34px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:20px;cursor:pointer;">+</button>
-        <span style="font-size:14px;color:var(--text2);font-weight:600;">people</span>
-      </div>
-      <div style="background:rgba(39,174,96,0.1);border:1px solid rgba(39,174,96,0.3);border-radius:10px;padding:12px;text-align:center;margin-bottom:16px;">
-        <div style="font-size:12px;color:var(--green);font-weight:600;margin-bottom:3px;">EACH PERSON PAYS</div>
-        <div style="font-size:32px;font-weight:900;color:var(--green);" id="split-per-person">Rs 0</div>
-      </div>
-      <!-- Per-person payment method -->
-      <div style="margin-bottom:12px;">
-        <div style="font-size:12px;color:var(--text2);font-weight:600;margin-bottom:7px;">Each Person Pays Via</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;">
-          <button class="pay-method-btn selected" id="sam-cash"      onclick="selectSplitAmtMethod('cash')">💵 Cash</button>
-          <button class="pay-method-btn"           id="sam-card"      onclick="selectSplitAmtMethod('card')">💳 Card</button>
-          <button class="pay-method-btn"           id="sam-bank"      onclick="selectSplitAmtMethod('bank')">🏦 Bank</button>
-          <button class="pay-method-btn"           id="sam-jazzcash"  onclick="selectSplitAmtMethod('jazzcash')">📱 JazzCash</button>
-          <button class="pay-method-btn"           id="sam-foodpanda" onclick="selectSplitAmtMethod('foodpanda')">🐼 FoodPanda</button>
-          <button class="pay-method-btn"           id="sam-mixed"     onclick="selectSplitAmtMethod('mixed')">🔀 Mixed</button>
-        </div>
-      </div>
-      <div class="modal-actions">
-        <button class="modal-cancel" onclick="closeModal('split-modal')">Cancel</button>
-        <button class="modal-confirm" onclick="applySplitByAmount()">Print Split Bills</button>
-      </div>
+<div id="split-amount-section" style="display:none;">
+  <div style="background:var(--surface2);border-radius:10px;padding:14px;margin-bottom:14px;text-align:center;">
+    <div style="font-size:12px;color:var(--text3);margin-bottom:4px;">ORDER TOTAL</div>
+    <div style="font-size:28px;font-weight:800;color:var(--orange);" id="split-order-total">Rs 0</div>
+  </div>
+  <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;">
+    <span style="font-size:14px;color:var(--text2);font-weight:600;white-space:nowrap;">Split between</span>
+    <button onclick="changeSplitPeople(-1)" style="width:34px;height:34px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:20px;cursor:pointer;">−</button>
+    <span id="split-people-count" style="font-size:24px;font-weight:800;min-width:30px;text-align:center;">2</span>
+    <button onclick="changeSplitPeople(1)" style="width:34px;height:34px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:20px;cursor:pointer;">+</button>
+    <span style="font-size:14px;color:var(--text2);font-weight:600;">people</span>
+  </div>
+  <div style="display:flex;justify-content:flex-end;margin-bottom:6px;">
+    <button onclick="buildSplitRows()" style="padding:4px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface3);color:var(--text2);font-size:12px;font-weight:700;cursor:pointer;">⚖️ Reset to equal</button>
+  </div>
+  <div id="split-rows" style="margin-bottom:10px;"></div>
+  <div class="pay-change-box" id="split-amt-balance-box">
+    <div class="pay-change-label" id="split-amt-balance-label">REMAINING</div>
+    <div class="pay-change-amount" id="split-amt-remaining">Rs 0</div>
+  </div>
+  <div class="modal-actions">
+    <button class="modal-cancel" onclick="closeModal('split-modal')">Cancel</button>
+    <button class="modal-confirm" onclick="applySplitByAmount()">Print Split Bills</button>
+  </div>
+</div>
     </div>
   </div>
 </div>
@@ -4009,7 +4002,7 @@ function openSplitModal() {
   var totals = getOrderTotal(currentOrder.items, currentOrder.type, scOn, pct, discAmt, discType, delCharge);
   document.getElementById('split-order-total').textContent = 'Rs ' + totals.grand;
   document.getElementById('split-people-count').textContent = '2';
-  document.getElementById('split-per-person').textContent = 'Rs ' + Math.ceil(totals.grand / 2);
+  buildSplitRows();
 
   // Reset method buttons
   ['cash','card','bank','jazzcash','foodpanda'].forEach(function(m) {
@@ -4054,11 +4047,59 @@ function selectSplitAmtMethod(m) {
   });
 }
 
+let splitRows = []; // [{amt, method}]
+
 function changeSplitPeople(d) {
   splitPeople = Math.max(2, splitPeople + d);
   document.getElementById('split-people-count').textContent = splitPeople;
+  buildSplitRows();
+}
+
+function buildSplitRows() {
   var total = parseInt(document.getElementById('split-order-total').textContent.replace('Rs ','')) || 0;
-  document.getElementById('split-per-person').textContent = 'Rs ' + Math.ceil(total / splitPeople);
+  var per = Math.ceil(total / splitPeople);
+  splitRows = [];
+  for (var i = 0; i < splitPeople; i++) {
+    var isLast = i === splitPeople - 1;
+    splitRows.push({ amt: isLast ? total - per * (splitPeople - 1) : per, method: 'cash' });
+  }
+  renderSplitRows();
+}
+
+function renderSplitRows() {
+  var methods = [['cash','💵 Cash'],['card','💳 Card'],['bank','🏦 Bank'],['jazzcash','📱 JazzCash'],['foodpanda','🐼 FoodPanda']];
+  document.getElementById('split-rows').innerHTML = splitRows.map(function(r, i) {
+    return '<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;">' +
+      '<span style="width:24px;font-weight:800;color:var(--text2);">' + (i+1) + '</span>' +
+      '<input type="number" min="0" value="' + r.amt + '" oninput="updateSplitRow(' + i + ',\'amt\',this.value)" ' +
+        'style="width:100px;background:var(--surface2);border:1px solid var(--border);border-radius:9px;padding:9px 10px;color:var(--orange);font-family:\'Outfit\',sans-serif;font-size:16px;font-weight:800;outline:none;text-align:center;">' +
+      '<select onchange="updateSplitRow(' + i + ',\'method\',this.value)" ' +
+        'style="flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:9px;padding:10px;color:var(--text);font-family:\'Outfit\',sans-serif;font-size:13px;font-weight:700;outline:none;">' +
+        methods.map(function(m){ return '<option value="' + m[0] + '"' + (m[0]===r.method?' selected':'') + '>' + m[1] + '</option>'; }).join('') +
+      '</select></div>';
+  }).join('');
+  updateSplitRemaining();
+}
+
+function updateSplitRow(i, field, val) {
+  if (field === 'amt') splitRows[i].amt = parseFloat(val) || 0;
+  else splitRows[i].method = val;
+  updateSplitRemaining();
+}
+
+function updateSplitRemaining() {
+  var total = parseInt(document.getElementById('split-order-total').textContent.replace('Rs ','')) || 0;
+  var rem = total - splitRows.reduce(function(s, r){ return s + (r.amt || 0); }, 0);
+  var box = document.getElementById('split-amt-balance-box');
+  var label = document.getElementById('split-amt-balance-label');
+  var amt = document.getElementById('split-amt-remaining');
+  var ok = rem === 0;
+  var col = ok ? 'var(--green)' : 'var(--red)';
+  box.style.background = ok ? 'rgba(39,174,96,0.1)' : 'rgba(192,57,43,0.1)';
+  box.style.borderColor = ok ? 'rgba(39,174,96,0.3)' : 'rgba(192,57,43,0.3)';
+  label.style.color = col; amt.style.color = col;
+  label.textContent = rem > 0 ? 'STILL TO ASSIGN' : rem < 0 ? 'OVER BY' : 'ALL ASSIGNED ✓';
+  amt.textContent = 'Rs ' + Math.abs(rem);
 }
 
 function updateSplitTotal() {
@@ -4158,31 +4199,25 @@ async function applySplitByItems() {
   showToast('Split: Rs '+splitTotal+' (SC Rs '+splitSC+', Disc Rs '+splitDisc+')', 'success');
 }
 
-async function applySplitByAmount() { // <-- Added async here
+async function applySplitByAmount() {
   var total = parseInt(document.getElementById('split-order-total').textContent.replace('Rs ','')) || 0;
-  var perPerson = Math.ceil(total / splitPeople);
-  var method = splitAmtMethod;
+  var assigned = splitRows.reduce(function(s, r){ return s + (r.amt || 0); }, 0);
+  if (assigned !== total) { showToast('Amounts must add up to Rs ' + total, 'error'); return; }
+  if (splitRows.some(function(r){ return !(r.amt > 0); })) { showToast('Every person needs an amount above 0', 'error'); return; }
 
-  for (var i = 1; i <= splitPeople; i++) {
-    var isLast = i === splitPeople;
-    var thisAmount = isLast ? (total - perPerson * (splitPeople - 1)) : perPerson;
-
-    var thisMethod = method;
-    if (method === 'mixed') {
-      thisMethod = promptPaymentMethod('Person ' + i + ' of ' + splitPeople + ' — Rs ' + thisAmount + '. How did they pay?');
-      if (thisMethod === null) { showToast('Split payment cancelled — no bills recorded', 'error'); return; }
-    }
-
-    currentOrder.kotNo = null; // each split person needs their own fresh number
+  var n = splitRows.length;
+  for (var i = 0; i < n; i++) {
+    var row = splitRows[i];
+    currentOrder.kotNo = null; // each person needs a fresh bill number
     var billNo = await _assignKotNumber();
-    var _splitAmtSaleId = genId();
+    var saleId = genId();
     var splitSale = {
-      id: _splitAmtSaleId,
-      billNo: billNo,
+      id: saleId, billNo: billNo,
       table: currentOrder.table, type: currentOrder.type,
-      items: currentOrder.items,
-      total: thisAmount, method: thisMethod,
-      time: currentOrder.startTime ? new Date(currentOrder.startTime) : new Date(), staff: currentStaff, branch: activeBranch,
+      items: [{ name: 'Split bill share ' + (i+1) + '/' + n, price: row.amt, qty: 1, note: '' }],
+      total: row.amt, method: row.method,
+      time: currentOrder.startTime ? new Date(currentOrder.startTime) : new Date(),
+      staff: currentStaff, branch: activeBranch,
       customerName: currentOrder.customerName || '',
       customerPhone: currentOrder.customerPhone || '',
       deliveryAddress: '', deliveryCharge: 0,
@@ -4191,32 +4226,29 @@ async function applySplitByAmount() { // <-- Added async here
       splitCash: 0, splitCard: 0
     };
 
-    const _splitAmtWriteRes = await sbWrite('shift_transactions', 'insert', [{
-      id: _splitAmtSaleId, branch: activeBranch, date: todayKey(),
+    const wr = await sbWrite('shift_transactions', 'insert', [{
+      id: saleId, branch: activeBranch, date: todayKey(),
       bill_no: billNo, type: currentOrder.type,
       table_loc: currentOrder.table || '',
       order_started_at: currentOrder.startTime ? new Date(currentOrder.startTime).toISOString() : null,
-      items_text: currentOrder.items.map(function(it){return it.qty+'x '+it.name;}).join(', ') + ' [split ' + i + '/' + splitPeople + ']',
-      subtotal: thisAmount, sc: 0, sc_pct: 0, discount: 0, delivery_charge: 0,
-      total: thisAmount, method: thisMethod,
+      items_text: currentOrder.items.map(function(it){return it.qty+'x '+it.name;}).join(', ') + ' [split ' + (i+1) + '/' + n + ']',
+      subtotal: row.amt, sc: 0, sc_pct: 0, discount: 0, delivery_charge: 0,
+      total: row.amt, method: row.method,
       cash_received: 0, split_cash: 0, split_card: 0,
       staff: currentStaff,
       customer_name: currentOrder.customerName || '',
       customer_phone: currentOrder.customerPhone || '',
       delivery_address: '', kitchen_order_id: currentOrder.id || null
     }]);
-    if (_splitAmtWriteRes && _splitAmtWriteRes.error) {
-      showToast('⚠️ Could not save split payment ' + i + ' of ' + splitPeople + ' — check your internet. Stopping; remaining people not charged.', 'error');
+    if (wr && wr.error) {
+      showToast('⚠️ Could not save payment ' + (i+1) + ' of ' + n + ' — stopped. Check internet; earlier ones are already recorded.', 'error');
       return;
     }
     completedOrders.push(splitSale);
-    if (thisMethod === 'cash') cashInHand += thisAmount;
-    salesTotal += thisAmount;
+    if (row.method === 'cash') cashInHand += row.amt;
+    salesTotal += row.amt;
     billCounter++;
-
-    (function(sale) {
-      setTimeout(function() { printReceipt(sale); }, (i - 1) * 800);
-    })(splitSale);
+    (function(sale, k) { setTimeout(function(){ printReceipt(sale); }, k * 800); })(splitSale, i);
   }
 
   document.getElementById('bar-cash').textContent = 'Rs ' + cashInHand;
@@ -4225,32 +4257,20 @@ async function applySplitByAmount() { // <-- Added async here
 
   const orderIdToUpdate = currentOrder.id;
   const _splitTable = currentOrder.table;
-
-  // --- DATABASE NETWORK OPERATIONS FIRST ---
-  // Clear the table in the cloud before resetting the local screen — if this
-  // fails, the table must stay visible/open so it doesn't silently reappear
-  // later while looking "clean" on this device right now.
-  let _splitClearOk = true;
-  if (_splitTable) {
-    _splitClearOk = await _saveActiveTable(_splitTable, null);
-  }
+  let clearOk = true;
+  if (_splitTable) clearOk = await _saveActiveTable(_splitTable, null);
   if (orderIdToUpdate) {
     await sbWrite('kitchen_orders', 'update',
       { status: 'PAID', paid_at: new Date().toISOString() },
       { eq: [['id', orderIdToUpdate]] });
   }
+  if (!clearOk) showToast('⚠️ Bills recorded, but could not clear the table — clear it manually.', 'error');
 
-  if (!_splitClearOk) {
-    showToast('⚠️ Bills recorded, but could not clear the table — check your internet and clear it manually.', 'error');
-  }
-
-  // --- UI STATE UPDATE ---
   currentOrder = { table: null, type: 'Dine-In', items: [], id: null };
   switchView('tables');
   renderTableMap();
   closeModal('split-modal');
-
-  showToast('Split into ' + splitPeople + ' bills — recorded ✅', 'success');
+  showToast('Split into ' + n + ' bills — recorded ✅', 'success');
 }
 
 // ══════════════════════════════════
@@ -4771,6 +4791,14 @@ async function printKitchenTicket() {
   const tokenNum = (type === 'Takeaway' && currentOrder.tokenNo) ? currentOrder.tokenNo : kotNum;
 
   const itemsHTML = currentOrder.items.map(i => {
+    if (i.returned) {
+      return `<div style="padding:6px 8px;border:2px solid #000;margin:4px 0;text-align:center;">
+        <div style="font-size:17px;font-weight:900;text-decoration:line-through;">${i.qty}x &nbsp;${i.name}</div>
+        <div style="font-size:15px;font-weight:900;letter-spacing:1px;">↩ RETURNED - NOT PAID</div>
+        <div style="font-size:13px;font-weight:800;">DO NOT PREPARE / REMOVE FROM TABLE</div>
+        ${i.returnReason ? `<div style="font-size:12px;font-weight:700;">Reason: ${i.returnReason}</div>` : ''}
+      </div>`;
+    }
     const addedQty = i.addedAfterKOT || 0;
     const originalQty = i.qty - addedQty;
     let qtyLine;
