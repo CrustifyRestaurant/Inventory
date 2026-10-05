@@ -4436,9 +4436,10 @@ function handOverTakeaway() {
 }
 function printTakeawaySlip(sale) {
   const br = BRANCHES[activeBranch];
-  const food = sale.items.reduce((s,i) => s + i.price * i.qty, 0);
-  const itemsText = sale.items.map(i =>
-    i.qty + 'x ' + i.name + (i.note ? '\n   > ' + i.note : '') + '   Rs ' + (i.price * i.qty)
+  const food = sale.items.reduce((s,i) => s + (i.returned ? 0 : i.price * i.qty), 0);
+  const itemsText = sale.items.map(i => i.returned
+    ? '[RETURNED - NOT CHARGED]\n' + i.qty + 'x ' + i.name + '   (Rs ' + (i.price * i.qty) + ' removed)'
+    : i.qty + 'x ' + i.name + (i.note ? '\n   > ' + i.note : '') + '   Rs ' + (i.price * i.qty)
   ).join('\n');
 
   document.getElementById('print-area').innerHTML =
@@ -4922,8 +4923,17 @@ async function printKitchenTicket() {
 
 function printReceipt(sale, isSplit=false) {
   const br = BRANCHES[activeBranch];
-  const food = sale.items.reduce((s,i) => s + i.price * i.qty, 0);
-  const itemsHTML = sale.items.map(i => `
+  const food = sale.items.reduce((s,i) => s + (i.returned ? 0 : i.price * i.qty), 0);
+  const itemsHTML = sale.items.map(i => i.returned ? `
+    <div style="margin-bottom:9px;border:2px solid #000;border-radius:6px;padding:6px 8px;">
+      <div style="display:flex;justify-content:space-between;gap:10px;">
+        <span style="font-size:15px;font-weight:700;text-decoration:line-through;">${i.qty}x ${i.name}</span>
+        <span style="font-size:15px;font-weight:700;white-space:nowrap;text-decoration:line-through;">Rs ${i.price * i.qty}</span>
+      </div>
+      <div style="font-size:13px;font-weight:900;text-align:center;letter-spacing:1px;margin-top:3px;">↩ RETURNED — NOT CHARGED</div>
+      ${i.returnReason ? `<div style="font-size:11px;font-weight:600;text-align:center;">Reason: ${i.returnReason}</div>` : ''}
+    </div>
+  ` : `
     <div style="margin-bottom:9px;">
       <div style="display:flex;justify-content:space-between;gap:10px;">
         <span style="font-size:15px;font-weight:700;">${i.qty}x ${i.name}</span>
