@@ -3391,7 +3391,7 @@ function openDealFlavorModal(deal, flavors) {
 // ══════════════════════════════════
 function addItemToOrder(item, price, qty=1, note='') {
   const wasSentAlready = !!currentOrder.id || !!currentOrder.sentToKitchen;
-  const existing = currentOrder.items.find(i => i.name===item.n && i.note===note);
+  const existing = currentOrder.items.find(i => i.name===item.n && i.note===note && !i.returned);
   if (existing) {
     existing.qty += qty;
     if (wasSentAlready) { existing.addedAfterKOT = (existing.addedAfterKOT||0) + qty; currentOrder.needsKitchenUpdate = true; }
@@ -3578,7 +3578,7 @@ function saveTableOrder() {
       items: itemsText,
       location: isDelivery ? (addr || currentOrder.table) : currentOrder.table,
       delivery_fee: delCharge,
-      subtotal: currentOrder.items.reduce((s,i) => s + i.price * i.qty, 0),
+      subtotal: currentOrder.items.reduce((s,i) => s + (i.returned ? 0 : i.price * i.qty), 0),
       customer_name: document.getElementById('order-customer-name')?.value || null,
       phone: document.getElementById('order-customer-phone')?.value || null
     }, { eq: [['id', currentOrder.id]] });
@@ -3716,19 +3716,34 @@ async function changeTablePrompt() {
 }
 async function returnItem(idx) {
   const item = currentOrder.items[idx];
+  if (!item || item.returned) return;
+
+  // Ask how many to return (only when the line has more than 1)
+  let retQty = item.qty;
+  if (item.qty > 1) {
+    const qStr = prompt('"' + item.name + '" — qty on bill: ' + item.qty + '\nHow many do you want to return? (1 to ' + item.qty + ')', '1');
+    if (qStr === null) return;
+    retQty = parseInt(qStr, 10);
+    if (isNaN(retQty) || retQty < 1 || retQty > item.qty) {
+      showToast('Enter a number between 1 and ' + item.qty, 'error');
+      return;
+    }
+  }
+
   const adminPin = prompt('Enter Admin PIN to return this item:');
   if (adminPin !== '7530' && adminPin !== '2314') { showToast('Wrong Admin PIN — return cancelled', 'error'); return; }
   const reason = prompt('Return reason for "' + item.name + '"?\n(e.g. Wrong item, Customer changed mind, Quality issue)');
-  if (reason === null) return; // cancelled
+  if (reason === null) return;
   if (!reason.trim()) { showToast('Return reason is required', 'error'); return; }
-  // Log the return
+
+  const returnValue = item.price * retQty;
   const _returnId = genId();
   const returnLog = {
     id: _returnId,
     billNo: 'RTN',
     table: currentOrder.table, type: currentOrder.type,
-    items: [{ ...item, qty: item.qty }],
-    total: -(item.price * item.qty),
+    items: [{ ...item, qty: retQty }],
+    total: -returnValue,
     method: 'return',
     time: new Date(), staff: currentStaff, branch: activeBranch,
     customerName: currentOrder.customerName || '',
@@ -3736,25 +3751,38 @@ async function returnItem(idx) {
     deliveryAddress: '', deliveryCharge: 0,
     sc: 0, disc: 0, scPct: 0, discType: 'flat', discAmount: 0,
     cashReceived: 0, splitCash: 0, splitCard: 0,
-    returnReason: reason || 'No reason given'
+    returnReason: reason.trim()
   };
   const _returnWriteRes = await sbWrite('shift_transactions', 'insert', [{
     id: _returnId, branch: activeBranch, date: todayKey(), bill_no: 'RTN-X' + genId().slice(0,6).toUpperCase(), type: currentOrder.type,
-    table_loc: currentOrder.table || '', items_text: item.qty + 'x ' + item.name,
-    subtotal: item.price * item.qty, total: -(item.price * item.qty),
-    method: 'return', staff: currentStaff, return_reason: reason || 'No reason given',
+    table_loc: currentOrder.table || '', items_text: retQty + 'x ' + item.name,
+    subtotal: returnValue, total: -returnValue,
+    method: 'return', staff: currentStaff, return_reason: reason.trim(),
     kitchen_order_id: currentOrder.id || null
   }]);
   if (_returnWriteRes && _returnWriteRes.error) {
     showToast('⚠️ Could not save the return (' + (_returnWriteRes.error || 'error') + '). Item NOT marked as returned.', 'error');
     return;
   }
-  currentOrder.items[idx].returned = true;
-  currentOrder.items[idx].returnReason = reason || 'No reason given';
+
+  if (retQty >= item.qty) {
+    // Whole line returned
+    item.returned = true;
+    item.returnReason = reason.trim();
+  } else {
+    // Partial: split the line — returned part becomes its own struck-through line,
+    // the remainder stays a normal billable line
+    const returnedLine = { ...item, qty: retQty, returned: true, returnReason: reason.trim() };
+    delete returnedLine.addedAfterKOT;
+    item.qty -= retQty;
+    if (item.addedAfterKOT) item.addedAfterKOT = Math.min(item.addedAfterKOT, item.qty);
+    currentOrder.items.splice(idx + 1, 0, returnedLine);
+  }
+
   completedOrders.push(returnLog);
   saveTableOrder();
   renderOrderItems();
-  showToast('↩ ' + item.name + ' marked as returned', 'success');
+  showToast('↩ ' + retQty + 'x ' + item.name + ' returned', 'success');
 }
 const DISCOUNT_EXCLUDED = ['Coke Buddy','Sprite Buddy','Coke 1 Liter','Next Cola 1 Liter','Coke 1.5L','Sprite 1.5L','Water Small','Water Large'];
 
