@@ -1798,6 +1798,33 @@ async function init() {
     console.error(e);
   }
 }
+async function fetchAll(table) {
+  const pageSize = 1000;
+
+  // 1. Ask Supabase how many rows the table has
+  const { count, error: cErr } = await sb.from(table)
+    .select('*', { count: 'exact', head: true });
+  if (cErr) { console.error(table, cErr); return { data: [] }; }
+
+  // 2. Fetch every page at the same time
+  const pages = Math.ceil((count || 0) / pageSize);
+  const requests = [];
+  for (let p = 0; p < pages; p++) {
+    requests.push(
+      sb.from(table).select('*').order('id')
+        .range(p * pageSize, p * pageSize + pageSize - 1)
+    );
+  }
+  const results = await Promise.all(requests);
+
+  // 3. Combine them
+  let all = [];
+  results.forEach(r => {
+    if (r.error) console.error(table, r.error);
+    else all = all.concat(r.data || []);
+  });
+  return { data: all };
+}
 
 async function loadAll() {
   setSyncStatus('busy', 'Loading data…');
@@ -1813,11 +1840,11 @@ async function loadAll() {
   ] = await Promise.all([
     sb.from('ingredients').select('*').order('name'),
     sb.from('grn').select('*').order('bizday', {ascending:false}),
-    sb.from('grn_items').select('*'),
+    fetchAll('grn_items'),
     sb.from('closing').select('*').order('bizday', {ascending:false}),
-    sb.from('closing_items').select('*'),
+    fetchAll('closing_items'),
     sb.from('batches').select('*').order('createdat', {ascending:false}),
-    sb.from('batch_items').select('*'),
+    fetchAll('batch_items'),
     sb.from('expenses').select('*').order('bizday', {ascending:false})
   ]);
   DB.ingredients   = ings   || [];
