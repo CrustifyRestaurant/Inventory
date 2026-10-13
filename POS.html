@@ -541,6 +541,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
   <span class="nav-badge" id="badge-delivery"></span>
 </button>
 <button class="nav-btn" id="nav-cash" onclick="switchView('cash')">💵 Cash</button>
+<button class="nav-btn" id="nav-credit" onclick="switchView('credit')">💳 Credit</button>
 <button class="nav-btn" id="nav-expense-standalone" onclick="addExpense()" style="background:rgba(230,126,34,0.15);color:var(--orange);">🧾 Expense</button>
 <button class="nav-btn" id="nav-closing" onclick="switchView('closing')">📊 Closing</button>
 <button class="nav-btn" id="nav-history" onclick="switchView('history')">📅 History</button>
@@ -928,7 +929,21 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
   </div>
 
   <!-- CLOSING -->
-  <div class="pos-view" id="view-closing">
+  <div class="pos-view" id="view-credit">
+<div style="max-width:100%;width:100%;padding:18px;">
+  <div class="section-header">
+    <div class="section-title-bar">💳 Customer Credit / Udhaar</div>
+    <div style="display:flex;gap:7px;">
+      <button class="refresh-btn" onclick="renderCreditView()">↻ Refresh</button>
+      <button class="action-btn-sm" style="background:rgba(230,126,34,0.15);color:var(--orange);border:1px solid rgba(230,126,34,0.3);" onclick="openIssueCreditModal()">+ Issue Credit</button>
+    </div>
+  </div>
+  <div class="cash-grid" id="credit-cards"></div>
+  <div id="credit-list-wrap"></div>
+</div>
+</div>
+
+<div class="pos-view" id="view-closing">
 <div style="max-width:100%;width:100%;padding:18px;">
         <div class="closing-header">
         <div>
@@ -1304,6 +1319,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
         <label><input type="checkbox" id="ns-perm-admin_tools"> Close-All-Shifts / Admin Tools</label>
 <label><input type="checkbox" id="ns-perm-print_logout" checked> Print Logout Receipt</label>
 <label><input type="checkbox" id="ns-perm-expense" checked> Record Expenses</label>
+<label><input type="checkbox" id="ns-perm-credit"> Customer Credit</label>
       </div>
     </div>
 
@@ -2302,7 +2318,7 @@ async function applyPOSOverrides() {
 // ══════════════════════════════════
 // STAFF / USER MANAGEMENT (admin only)
 // ══════════════════════════════════
-const PERM_KEYS = ['cash','closing','history','delivery','analytics','void','view_totals','admin_tools','print_logout','expense'];
+const PERM_KEYS = ['cash','closing','history','delivery','analytics','void','view_totals','admin_tools','print_logout','expense','credit'];
 
 function applyPOSPermissions() {
   const perms = currentStaffPermissions || {};
@@ -2319,6 +2335,7 @@ function applyPOSPermissions() {
   gate('nav-history',     isAdmin || perms.history !== false);
   gate('nav-closeshifts', isAdmin || perms.admin_tools === true);
   gate('nav-crosscheck', isAdmin || perms.admin_tools === true);
+  gate('nav-credit', isAdmin || perms.credit === true);
   gate('nav-analytics-1', isAdmin || perms.analytics === true);
   gate('nav-analytics-2', isAdmin || perms.analytics === true);
   gate('btn-manage-staff', isAdmin || perms.admin_tools === true);
@@ -2378,6 +2395,7 @@ async function renderStaffTable() {
           <label><input type="checkbox" id="sp_${s.id}_admin_tools" ${p.admin_tools===true?'checked':''}> Admin Tools</label>
           <label><input type="checkbox" id="sp_${s.id}_print_logout" ${p.print_logout!==false?'checked':''}> Print Logout Receipt</label>
           <label><input type="checkbox" id="sp_${s.id}_expense" ${p.expense!==false?'checked':''}> Record Expenses</label>
+          <label><input type="checkbox" id="sp_${s.id}_credit" ${p.credit===true?'checked':''}> Customer Credit</label>
         </div>
         <button onclick="saveStaffPermissions('${s.id}')" style="padding:6px 14px;border-radius:7px;background:var(--purple);color:white;border:none;font-family:'Outfit',sans-serif;font-size:12px;font-weight:800;cursor:pointer;">💾 Save Access</button>
       </td>
@@ -2800,7 +2818,7 @@ async function confirmAndPrintSlip() {
 function switchView(v) {
   const isAdmin = currentStaffRole === 'Admin' || currentStaffRole === 'Manager';
   const perms = currentStaffPermissions || {};
-  const blocked = { cash: perms.cash===false, closing: perms.closing===false, history: perms.history===false, delivery: perms.delivery===false, crosscheck: perms.admin_tools !== true };
+  const blocked = { cash: perms.cash===false, closing: perms.closing===false, history: perms.history===false, delivery: perms.delivery===false, crosscheck: perms.admin_tools !== true, credit: perms.credit !== true };
   if (!isAdmin && blocked[v]) { showToast('Access denied', 'error'); v = 'tables'; }
 
   document.querySelectorAll('.pos-view').forEach(x => x.classList.remove('active'));
@@ -2822,6 +2840,7 @@ function switchView(v) {
   document.getElementById('history-branch-picker').value = activeBranch;
   loadHistoryForRange(document.getElementById('history-date-picker').value, document.getElementById('history-date-to-picker').value);
 }
+  if (v === 'credit') renderCreditView();
   if (v === 'crosscheck') {
     _applySharedRangeOrDefault('xc-date-from', 'xc-date-to');
     loadCrossCheck();
@@ -5386,6 +5405,162 @@ async function addCashIn() {
   document.getElementById('bar-cash').textContent = 'Rs '+cashInHand;
   saveTodaySales(); renderCashView(); showToast('Cash In: Rs '+amt,'success');
 }
+let _creditData = [];
+
+async function openIssueCreditModal() {
+  const name = prompt('Customer Name:');
+  if (!name || !name.trim()) { showToast('Name required', 'error'); return; }
+  const phone = prompt('Phone Number:') || '';
+  const itemsText = prompt('Items taken (e.g. 2x Zinger Burger, 1x Fries):') || '';
+  const amt = parseFloat(prompt('Amount owed (Rs):')) || 0;
+  if (!amt || amt <= 0) { showToast('Valid amount required', 'error'); return; }
+
+  // Repeat customers add to one open account instead of a new row each visit
+  let existing = null;
+  if (sb) {
+    try {
+      let q = sb.from('credit_accounts').select('*').eq('branch', activeBranch).neq('status', 'paid');
+      q = phone.trim() ? q.eq('phone', phone.trim()) : q.eq('customer_name', name.trim());
+      const { data } = await q.order('issued_at', { ascending: false }).limit(1);
+      if (data && data.length) existing = data[0];
+    } catch(e) {}
+  }
+
+  if (existing) {
+    const addToExisting = confirm(
+      existing.customer_name + ' already has an open credit account (Rs ' +
+      Math.max(0, existing.amount - (existing.paid_amount||0)) + ' owed).\n\n' +
+      'OK = Add this new amount to their existing balance\n' +
+      'Cancel = Create a separate new account'
+    );
+    if (addToExisting) {
+      const newAmount = existing.amount + amt;
+      const newItemsText = (existing.items_text ? existing.items_text + ' | ' : '') + itemsText.trim();
+      const res = await sbWrite('credit_accounts', 'update',
+        { amount: newAmount, items_text: newItemsText, status: 'unpaid' },
+        { eq: [['id', existing.id]] });
+      if (res && res.error) { showToast('⚠️ Could not update credit — check internet', 'error'); return; }
+      showToast('Added Rs ' + amt + ' to ' + existing.customer_name + '\'s balance', 'success');
+      renderCreditView();
+      return;
+    }
+  }
+
+  const dueDate = prompt('Due date (YYYY-MM-DD) — optional, leave blank to skip:') || null;
+  const res = await sbWrite('credit_accounts', 'insert', [{
+    id: genId(), branch: activeBranch, customer_name: name.trim(), phone: phone.trim(),
+    items_text: itemsText.trim(), amount: amt, paid_amount: 0, status: 'unpaid',
+    issued_at: new Date().toISOString(), issued_by: currentStaff, due_date: dueDate || null
+  }]);
+  if (res && res.error) { showToast('⚠️ Could not save credit — check internet', 'error'); return; }
+  showToast('Credit issued: Rs ' + amt + ' — ' + name.trim(), 'success');
+  renderCreditView();
+}
+
+async function renderCreditView() {
+  const wrap = document.getElementById('credit-list-wrap');
+  wrap.innerHTML = '<div style="color:var(--text3);padding:20px;text-align:center;">Loading…</div>';
+  if (!sb) return;
+  try {
+    const { data } = await sb.from('credit_accounts')
+      .select('*').eq('branch', activeBranch)
+      .order('issued_at', { ascending: false });
+    _creditData = data || [];
+  } catch(e) {
+    wrap.innerHTML = '<div style="color:var(--red);padding:20px;text-align:center;">Error loading credit data</div>';
+    return;
+  }
+
+  const totalOwed = _creditData.reduce((s,c) => s + Math.max(0, c.amount - (c.paid_amount||0)), 0);
+  const totalIssued = _creditData.reduce((s,c) => s + c.amount, 0);
+  const totalCollected = _creditData.reduce((s,c) => s + (c.paid_amount||0), 0);
+  const openCount = _creditData.filter(c => c.status !== 'paid').length;
+
+  document.getElementById('credit-cards').innerHTML = `
+    <div class="cash-card"><div class="cash-card-label">Total Outstanding</div><div class="cash-card-value red">Rs ${totalOwed}</div></div>
+    <div class="cash-card"><div class="cash-card-label">Total Issued</div><div class="cash-card-value">Rs ${totalIssued}</div></div>
+    <div class="cash-card"><div class="cash-card-label">Total Collected</div><div class="cash-card-value green">Rs ${totalCollected}</div></div>
+    <div class="cash-card"><div class="cash-card-label">Open Accounts</div><div class="cash-card-value orange">${openCount}</div></div>
+  `;
+
+  if (!_creditData.length) {
+    wrap.innerHTML = '<div style="color:var(--text3);padding:36px;text-align:center;">No credit records yet.</div>';
+    return;
+  }
+
+  wrap.innerHTML = _creditData.map(c => {
+    const balance = Math.max(0, c.amount - (c.paid_amount||0));
+    const statusColor = c.status === 'paid' ? 'var(--green)' : c.status === 'partial' ? 'var(--orange)' : 'var(--red)';
+    return `
+    <div style="background:var(--surface);border:1px solid var(--border);border-left:3px solid ${statusColor};border-radius:10px;padding:14px 16px;margin-bottom:10px;">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">
+        <div>
+          <div style="font-weight:800;font-size:15px;">${c.customer_name}</div>
+          ${c.phone ? `<div style="font-size:12px;color:var(--text2);">📞 ${c.phone}</div>` : ''}
+          <div style="font-size:12px;color:var(--text3);margin-top:3px;">${c.items_text||''}</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:3px;">Issued ${new Date(c.issued_at).toLocaleDateString('en-PK')} by ${c.issued_by||'—'}${c.due_date?' · Due '+c.due_date:''}</div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-size:11px;color:var(--text3);">Owed</div>
+          <div style="font-size:20px;font-weight:900;color:${statusColor};">Rs ${balance}</div>
+          ${c.paid_amount>0?`<div style="font-size:11px;color:var(--green);">Paid: Rs ${c.paid_amount}</div>`:''}
+        </div>
+      </div>
+      ${balance > 0 ? `<button onclick="recordCreditPayment('${c.id}', ${balance})" style="margin-top:10px;width:100%;padding:8px;border-radius:8px;background:var(--green);color:white;border:none;font-family:'Outfit',sans-serif;font-size:12px;font-weight:800;cursor:pointer;">💰 Record Payment</button>` : `<div style="margin-top:8px;font-size:12px;color:var(--green);font-weight:700;">✅ Fully Paid</div>`}
+    </div>`;
+  }).join('');
+}
+
+async function recordCreditPayment(creditId, balanceDue) {
+  const amtStr = prompt('Payment amount (Rs) — balance due: Rs ' + balanceDue + ':');
+  const amt = parseFloat(amtStr) || 0;
+  if (!amt || amt <= 0) { showToast('Valid amount required', 'error'); return; }
+  if (amt > balanceDue && !confirm('Amount exceeds balance due. Continue anyway?')) return;
+
+  const method = promptPaymentMethod('Payment received via?');
+  if (method === null) { showToast('Cancelled', 'error'); return; }
+
+  const credit = _creditData.find(c => c.id === creditId);
+  if (!credit) { showToast('Credit record not found', 'error'); return; }
+
+  const newPaid = (credit.paid_amount||0) + amt;
+  const newStatus = newPaid >= credit.amount ? 'paid' : 'partial';
+
+  const updRes = await sbWrite('credit_accounts', 'update',
+    { paid_amount: newPaid, status: newStatus },
+    { eq: [['id', creditId]] });
+  if (updRes && updRes.error) { showToast('⚠️ Could not save payment — check internet', 'error'); return; }
+
+  await sbWrite('credit_payments', 'insert', [{
+    id: genId(), credit_id: creditId, branch: activeBranch,
+    amount: amt, method, paid_at: new Date().toISOString(), staff: currentStaff
+  }]);
+
+  if (method === 'cash') {
+    const _cpId = genId();
+    await sbWrite('shift_transactions', 'insert', [{
+      id: _cpId, branch: activeBranch, date: todayKey(),
+      bill_no: 'CRPAY-X' + genId().slice(0,6).toUpperCase(),
+      type: 'Credit Payment', table_loc: '',
+      items_text: 'Credit payment — ' + credit.customer_name,
+      subtotal: amt, total: amt, method: 'cash-in',
+      staff: currentStaff, return_reason: 'Credit repayment'
+    }]);
+    completedOrders.push({
+      id: _cpId, billNo: 'CRPAY', table: '', type: 'Credit Payment',
+      items: [{name:'Credit payment — '+credit.customer_name, price: amt, qty: 1, note:''}],
+      total: amt, method: 'cash-in', time: new Date(), staff: currentStaff, branch: activeBranch, sc:0, disc:0
+    });
+    cashInHand += amt;
+    document.getElementById('bar-cash').textContent = 'Rs ' + cashInHand;
+    saveTodaySales();
+  }
+
+  showToast('Payment recorded: Rs ' + amt + ' — ' + credit.customer_name, 'success');
+  renderCreditView();
+  if (document.getElementById('view-cash').classList.contains('active')) renderCashView();
+}
+
 async function addExpense() {
   const kind = prompt('Expense type?\n\n1 = Slip expense (paid from till)\n2 = Finance expense (paid by owner from bank)\n\nType 1 or 2:');
   if (kind === null) return;
@@ -5504,7 +5679,7 @@ const billsCount = orders.filter(o=>!['cash-in','cash-out','void','return','expe
       <td style="text-align:right;font-weight:700;color:${o.total<0?'var(--red)':'var(--green)'};">Rs ${Math.abs(o.total)}</td>
       <td style="text-align:center;">
         <div style="display:flex;gap:3px;justify-content:center;">
-        ${o.billNo && !/^(CI|CO|VOID|RTN|ADJ|DISC|DELDEL|EXP)(-X|$)/.test(o.billNo) && !o.billNo.startsWith('SPL') ? 
+        ${o.billNo && !/^(CI|CO|VOID|RTN|ADJ|DISC|DELDEL|EXP|CRPAY)(-X|$)/.test(o.billNo) && !o.billNo.startsWith('SPL') ? 
           `<button onclick="reprintReceipt('${o.billNo}')" style="padding:2px 8px;border-radius:4px;border:1px solid var(--border);background:var(--surface2);color:var(--text2);font-size:11px;cursor:pointer;" title="Reprint">🖨️</button>` : 
           '<span style="color:var(--text3);font-size:11px;"></span>'}
         ${currentStaffRole === 'Admin' && o.billNo && o.billNo !== 'CI' && o.billNo !== 'CO' ? `<button onclick="openAdminTxModal('${o.billNo}',true,'${todayKey()}','${activeBranch}')" style="padding:2px 8px;border-radius:4px;border:1px solid rgba(142,68,173,0.4);background:rgba(142,68,173,0.1);color:#bb77ff;font-size:11px;cursor:pointer;" title="Admin Edit">⚙️</button>` : ''}
