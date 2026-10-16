@@ -1315,7 +1315,7 @@ tr:hover td{background:#fafafa;}
   <div class="modal modal-lg">
     <div class="modal-head">
       <span class="modal-title">Night Closing — Manual Count</span>
-      <button class="modal-close" onclick="closeM('m-closing')">&times;</button>
+      <button class="modal-close" onclick="confirmCloseClosing()">&times;</button>
     </div>
     <div class="modal-body">
       <div class="form-row" style="margin-bottom:14px;">
@@ -3292,6 +3292,21 @@ function generateClosingTable(bizday) {
       <td><span class="unit-pill">${ing.unit}</span></td>
     </tr>`;
   }).join('');
+}
+
+function confirmCloseClosing() {
+  // If nothing has been counted yet, just close. There is nothing to save.
+  const hasCounts = [...document.querySelectorAll('#cl-tbody .closing-input')]
+    .some(inp => inp.value !== '');
+  if (!hasCounts) { closeM('m-closing'); return; }
+
+  const saveIt = confirm(
+    'Do you want to save this Night Closing before leaving?\n\n' +
+    'OK = Yes, save it\n' +
+    'Cancel = Stay here and keep editing'
+  );
+  if (saveIt) saveManualClosing(); // saves, then closes the modal itself
+  // Cancel: do nothing, so the modal stays open with everything intact
 }
 
 function filterClosingTable() {
