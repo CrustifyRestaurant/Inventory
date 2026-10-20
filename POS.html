@@ -7,6 +7,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet"><script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
 <style>
 :root {
   --red:#c0392b;--dark-red:#922b21;--orange:#e67e22;--dark-orange:#a04000;
@@ -914,6 +915,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
         <input type="datetime-local" step="60" id="cash-date-to" onchange="syncDateRangeFromInputs('cash-date-from','cash-date-to')" style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:6px 10px;color:var(--text);font-family:'Outfit',sans-serif;font-size:13px;outline:none;">
         <button class="refresh-btn" onclick="loadCashForRange(document.getElementById('cash-date-from').value, document.getElementById('cash-date-to').value)">↻ Load Range</button>
         <button class="refresh-btn" onclick="printCashDrawerReport()" style="color:var(--green);border-color:var(--green);">🖨️ Print Report</button>
+        <button class="refresh-btn" onclick="exportExpensesExcel()" style="color:var(--green);border-color:var(--green);">📊 Expenses Excel</button>
       </div>
       <div class="opening-form">
         <div class="of-label">Opening Balance (Rs)</div>
@@ -1007,6 +1009,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
           <option value="">All staff</option>
         </select>
         <button class="refresh-btn" onclick="loadCrossCheck()">↻ Load</button>
+        <button class="refresh-btn" onclick="exportExpensesExcel()" style="color:var(--green);border-color:var(--green);">📊 Expenses Excel</button>
       </div>
     </div>
     <div style="font-size:12px;color:var(--text3);margin-bottom:14px;">Each cashier's end-of-shift report is compared against what the POS recorded for that same person and shift window. Differences show in red.</div>
@@ -5614,6 +5617,140 @@ if (!rawDesc.trim()) { showToast('Please pick an expense', 'error'); return; }
   showToast((isFinance ? '🏦 Finance expense: Rs ' : '🧾 Slip expense: Rs ') + amt + ' — ' + rawDesc.trim(), 'error');
 }
 
+// Expense head = the preset name (Rider Fuel, Staff food…) or the typed text
+function _expHead(desc) {
+  const d = String(desc || '').replace(/^\s*\[FINANCE\]\s*/i, '').trim();
+  if (!d) return 'Uncategorized';
+  const low = d.toLowerCase();
+  const hit = EXPENSE_PRESETS.find(p => low === p.toLowerCase() || low.startsWith(p.toLowerCase() + ' — '));
+  if (hit) return hit;
+  return low.charAt(0).toUpperCase() + low.slice(1);
+}
+
+async function exportExpensesExcel() {
+  const isAdmin = currentStaffRole === 'Admin' || currentStaffRole === 'Manager';
+  if (!isAdmin && (currentStaffPermissions || {}).expense === false) { showToast('Access denied', 'error'); return; }
+  if (typeof ExcelJS === 'undefined') { showToast('Excel library not loaded — refresh the page', 'error'); return; }
+  if (!sb || !isOnline) { showToast('No internet connection', 'error'); return; }
+
+  const fromVal = (_sharedDateRange && _sharedDateRange.from) || (todayKey() + 'T00:00');
+  const toVal   = (_sharedDateRange && _sharedDateRange.to)   || (todayKey() + 'T23:59');
+  const fromISO = _dtLocalToISO(fromVal), toISO = _dtLocalToISO(toVal);
+  showToast('Preparing expenses export…', 'success');
+
+  const rows = [];
+  try {
+    // 1) Expenses added with the Expense button
+    const _fetchExpPage = async (from) => {
+      const { data, error } = await sb.from('shift_transactions')
+        .select('id,created_at,items_text,total,staff')
+        .eq('branch', activeBranch).eq('method', 'expense')
+        .gte('created_at', fromISO).lte('created_at', toISO)
+        .order('created_at', { ascending: true }).order('id', { ascending: true })
+        .range(from, from + 999);
+      if (error) throw error;
+      (data || []).forEach(t => {
+        const raw = t.items_text || '';
+        const isFin = /^\s*\[FINANCE\]/i.test(raw);
+        const clean = raw.replace(/^\s*\[FINANCE\]\s*/i, '').trim();
+        rows.push({ when: new Date(t.created_at), type: isFin ? 'Finance' : 'Till', head: _expHead(clean), detail: clean, amount: Math.abs(t.total || 0), staff: t.staff || '', source: 'Expense button' });
+      });
+      if (data && data.length === 1000) await _fetchExpPage(from + 1000);
+    };
+    await _fetchExpPage(0);
+    // 2) Expenses typed in cashiers' end-of-shift reports
+    const { data: decls, error: dErr } = await sb.from('cashier_declarations')
+      .select('staff,shift_end,expense_items')
+      .eq('branch', activeBranch).gte('shift_end', fromISO).lte('shift_end', toISO)
+      .order('shift_end', { ascending: true });
+    if (dErr) throw dErr;
+    (decls || []).forEach(d => {
+      (Array.isArray(d.expense_items) ? d.expense_items : []).forEach(i => {
+        rows.push({ when: new Date(d.shift_end), type: i.type === 'finance' ? 'Finance' : 'Till', head: _expHead(i.desc), detail: i.desc || '', amount: Number(i.amount) || 0, staff: d.staff || '', source: 'End-of-shift report' });
+      });
+    });
+  } catch (e) { showToast('Could not load expenses: ' + e.message, 'error'); return; }
+
+  if (!rows.length) { showToast('No expenses found in this range', 'error'); return; }
+  rows.sort((a, b) => a.head.localeCompare(b.head) || a.when - b.when);
+
+  const tz = { timeZone: 'Asia/Karachi' };
+  const wb = new ExcelJS.Workbook();
+
+  // ---- Sheet 1: all expenses, grouped by head ----
+  const ws = wb.addWorksheet('All Expenses');
+  ws.mergeCells('A1:I1');
+  ws.getCell('A1').value = 'CRUSTIFY — ' + activeBranch + ' — Expenses Report';
+  ws.getCell('A1').font = { bold: true, size: 14 };
+  ws.mergeCells('A2:I2');
+  ws.getCell('A2').value = 'Range: ' + fromVal.replace('T', ' ') + ' to ' + toVal.replace('T', ' ') + '   |   Exported by ' + currentStaff + ' on ' + new Date().toLocaleString('en-PK', tz);
+  ws.getCell('A2').font = { color: { argb: 'FF6B6B6B' } };
+  const headers = ['#', 'Expense Head', 'Type', 'Date', 'Time', 'Description', 'Amount (Rs)', 'Staff', 'Source'];
+  const widths  = [6, 22, 10, 14, 11, 38, 15, 14, 20];
+  const hr = ws.getRow(4);
+  headers.forEach((h, i) => {
+    const c = hr.getCell(i + 1);
+    c.value = h; c.font = { bold: true };
+    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
+    ws.getColumn(i + 1).width = widths[i];
+  });
+  rows.forEach((r, i) => {
+    const row = ws.addRow([
+      i + 1, r.head, r.type,
+      r.when.toLocaleDateString('en-PK', { ...tz, day: '2-digit', month: 'short', year: 'numeric' }),
+      r.when.toLocaleTimeString('en-PK', { ...tz, hour: '2-digit', minute: '2-digit', hour12: true }),
+      r.detail, r.amount, r.staff, r.source
+    ]);
+    row.getCell(7).numFmt = '#,##0';
+    if (r.type === 'Finance') row.getCell(3).font = { color: { argb: 'FF2563EB' }, bold: true };
+  });
+  const tr = ws.addRow(['', '', '', '', '', 'TOTAL', { formula: 'SUM(G5:G' + (4 + rows.length) + ')' }, '', '']);
+  tr.getCell(6).font = { bold: true };
+  tr.getCell(7).font = { bold: true, color: { argb: 'FFDC2626' } };
+  tr.getCell(7).numFmt = '#,##0';
+
+  // ---- Sheet 2: by head, Till and Finance side by side ----
+  const byHead = {};
+  rows.forEach(r => {
+    if (!byHead[r.head]) byHead[r.head] = { till: 0, fin: 0 };
+    if (r.type === 'Finance') byHead[r.head].fin += r.amount; else byHead[r.head].till += r.amount;
+  });
+  const ws2 = wb.addWorksheet('By Head');
+  ws2.columns = [{ header: 'Expense Head', key: 'h', width: 26 }, { header: 'Till (Rs)', key: 't', width: 15 }, { header: 'Finance (Rs)', key: 'f', width: 15 }, { header: 'Total (Rs)', key: 'a', width: 15 }];
+  ws2.getRow(1).font = { bold: true };
+  const heads = Object.keys(byHead).sort((a, b) => (byHead[b].till + byHead[b].fin) - (byHead[a].till + byHead[a].fin));
+  heads.forEach(h => {
+    const r = ws2.addRow({ h, t: byHead[h].till, f: byHead[h].fin, a: byHead[h].till + byHead[h].fin });
+    [2, 3, 4].forEach(c => r.getCell(c).numFmt = '#,##0');
+  });
+  const n = heads.length + 1;
+  const t2 = ws2.addRow({ h: 'TOTAL', t: { formula: 'SUM(B2:B' + n + ')' }, f: { formula: 'SUM(C2:C' + n + ')' }, a: { formula: 'SUM(D2:D' + n + ')' } });
+  t2.font = { bold: true };
+  [2, 3, 4].forEach(c => t2.getCell(c).numFmt = '#,##0');
+
+  // ---- Sheet 3: totals by source (so nothing is hidden) ----
+  const ws3 = wb.addWorksheet('By Source');
+  ws3.columns = [{ header: 'Source', key: 's', width: 26 }, { header: 'Till (Rs)', key: 't', width: 15 }, { header: 'Finance (Rs)', key: 'f', width: 15 }];
+  ws3.getRow(1).font = { bold: true };
+  ['Expense button', 'End-of-shift report'].forEach(s => {
+    const r = ws3.addRow({
+      s,
+      t: rows.filter(x => x.source === s && x.type === 'Till').reduce((a, x) => a + x.amount, 0),
+      f: rows.filter(x => x.source === s && x.type === 'Finance').reduce((a, x) => a + x.amount, 0)
+    });
+    [2, 3].forEach(c => r.getCell(c).numFmt = '#,##0');
+  });
+
+  const buffer = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'Crustify_' + activeBranch + '_Expenses_' + fromVal.slice(0, 10) + '_to_' + toVal.slice(0, 10) + '.xlsx';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  showToast('Expenses exported ✅', 'success');
+}
+
 async function addCashOut() {
   const amt = parseFloat(prompt('Cash Out amount (Rs):')) || 0;
   if (!amt) return;
@@ -5839,6 +5976,7 @@ async function renderClosingReport() {
   const deletedDelTotal = deletedDel.reduce((s,t) => s + Math.abs(t.total), 0);
   const cashOuts = txs.filter(t => t.method === 'cash-out').reduce((s,t) => s + Math.abs(t.total), 0);
   const expenses = sales.filter(t => t.method === 'expense' && !/^\s*\[FINANCE\]/i.test(t.items_text || '')).reduce((s,t) => s + Math.abs(t.total), 0);
+  const financeExp = sales.filter(t => t.method === 'expense' && /^\s*\[FINANCE\]/i.test(t.items_text || '')).reduce((s,t) => s + Math.abs(t.total), 0);
   const totalDelCharges = deliveryFeesOnly;
   const avg = billsOnly.length > 0 ? Math.round(shopTotal/billsOnly.length) : 0;
 
@@ -5865,7 +6003,8 @@ async function renderClosingReport() {
 <div class="cs-card red"><div class="cs-val">Rs ${totalCash}</div><div class="cs-lbl">Cash Collected</div></div>
 <div class="cs-card blue"><div class="cs-val">Rs ${totalCard}</div><div class="cs-lbl">Card Collected</div></div>
     <div class="cs-card green"><div class="cs-val">Rs ${computeCashInHand(txs, opening)}</div><div class="cs-lbl">Expected in Drawer</div></div>
-    <div class="cs-card red"><div class="cs-val">Rs ${expenses}</div><div class="cs-lbl">Expenses</div></div>
+    <div class="cs-card red"><div class="cs-val">Rs ${expenses}</div><div class="cs-lbl">Till Expenses</div></div>
+    <div class="cs-card blue"><div class="cs-val">Rs ${financeExp}</div><div class="cs-lbl">Finance Expenses</div></div>
     <div class="cs-card orange"><div class="cs-val">Rs ${avg}</div><div class="cs-lbl">Avg Bill Value</div></div>
   `;
 
@@ -5910,7 +6049,8 @@ async function renderClosingReport() {
 <div class="cb-row"><span>Cash Sales</span><span class="cb-row-val">Rs ${totalCash}</span></div>
       <div class="cb-row"><span>Card Sales</span><span class="cb-row-val">Rs ${totalCard}</span></div>
       <div class="cb-row"><span>Cash Outs</span><span class="cb-row-val" style="color:var(--red);">-Rs ${cashOuts}</span></div>
-      <div class="cb-row"><span>Expenses</span><span class="cb-row-val" style="color:var(--red);">-Rs ${expenses}</span></div>
+      <div class="cb-row"><span>Till Expenses</span><span class="cb-row-val" style="color:var(--red);">-Rs ${expenses}</span></div>
+      <div class="cb-row"><span>Finance Expenses (not taken from drawer)</span><span class="cb-row-val">Rs ${financeExp}</span></div>
       <div class="cb-row" style="border-top:1px solid var(--border);margin-top:3px;padding-top:6px;">
         <span style="font-weight:700;color:white;">Expected in Drawer</span>
         <span class="cb-row-val" style="color:var(--green);font-size:15px;">Rs ${opening+totalCash-cashOuts-expenses}</span>
@@ -6849,19 +6989,15 @@ function _xcExpDetail(d) {
 const _XC_NON_BILL = ['cash-in','cash-out','void','return','expense','discarded','deleted-delivery','item-void'];
 function _xcEsc(s){ return String(s==null?'':s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
-async function _xcFetchAll(fromISO, toISO, staff) {
-  let all = [], from = 0;
-  while (true) {
-    let q = sb.from('shift_transactions').select('*').eq('branch', activeBranch)
-      .gte('created_at', fromISO).lte('created_at', toISO);
-    if (staff) q = q.eq('staff', staff);
-    const { data, error } = await q.order('created_at', { ascending: true }).order('id', { ascending: true }).range(from, from + 999);
-    if (error) throw error;
-    all = all.concat(data || []);
-    if (!data || data.length < 1000) break;
-    from += 1000;
-  }
-  return all;
+async function _xcFetchAll(fromISO, toISO, staff, from = 0, acc = []) {
+  let q = sb.from('shift_transactions').select('*').eq('branch', activeBranch)
+    .gte('created_at', fromISO).lte('created_at', toISO);
+  if (staff) q = q.eq('staff', staff);
+  const { data, error } = await q.order('created_at', { ascending: true }).order('id', { ascending: true }).range(from, from + 999);
+  if (error) throw error;
+  const all = acc.concat(data || []);
+  if (!data || data.length < 1000) return all;
+  return _xcFetchAll(fromISO, toISO, staff, from + 1000, all);
 }
 
 // Same three numbers the cashier is asked for
