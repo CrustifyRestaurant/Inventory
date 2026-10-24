@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -6989,15 +6990,24 @@ function _xcExpDetail(d) {
 const _XC_NON_BILL = ['cash-in','cash-out','void','return','expense','discarded','deleted-delivery','item-void'];
 function _xcEsc(s){ return String(s==null?'':s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
-async function _xcFetchAll(fromISO, toISO, staff, from = 0, acc = []) {
-  let q = sb.from('shift_transactions').select('*').eq('branch', activeBranch)
-    .gte('created_at', fromISO).lte('created_at', toISO);
-  if (staff) q = q.eq('staff', staff);
-  const { data, error } = await q.order('created_at', { ascending: true }).order('id', { ascending: true }).range(from, from + 999);
-  if (error) throw error;
-  const all = acc.concat(data || []);
-  if (!data || data.length < 1000) return all;
-  return _xcFetchAll(fromISO, toISO, staff, from + 1000, all);
+async function _xcFetchAll(fromISO, toISO, staff) {
+  const PAGE = 1000;
+  let all = [], from = 0;
+  while (true) {
+    let q = sb.from('shift_transactions').select('*').eq('branch', activeBranch)
+      .gte('created_at', fromISO).lte('created_at', toISO);
+    if (staff) q = q.eq('staff', staff);
+    const { data, error } = await q
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (error) throw error;
+    if (!data || !data.length) break;      // only an empty page means done
+    all = all.concat(data);
+    from += data.length;                   // step by what we really got
+    console.log('XC page loaded, total so far:', all.length);
+  }
+  return all;
 }
 
 // Same three numbers the cashier is asked for
