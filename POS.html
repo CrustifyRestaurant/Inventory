@@ -1,4 +1,5 @@
 
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1183,21 +1184,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
 <div class="modal-backdrop" id="decl-modal">
   <div class="modal-box" style="max-width:420px;">
     <div class="modal-title">📝 End-of-Shift Report</div>
-    <div class="modal-sub">Enter your figures for this shift before logging out. Use 0 if none. These cannot be changed after submitting.</div>
-    <div class="of-label">Cash amount collected (Rs)</div>
-    <input class="of-input" type="number" id="decl-cash" min="0" placeholder="0">
-    <div class="of-label">Online amount (JazzCash + Card + Bank + FoodPanda) (Rs)</div>
-    <input class="of-input" type="number" id="decl-online" min="0" placeholder="0">
-    <div class="of-label" style="display:flex;justify-content:space-between;align-items:center;">
-      <span>Expenses paid — what for, and how much</span>
-      <span style="color:var(--orange);font-weight:800;">Total: <span id="decl-exp-total">Rs 0</span></span>
-    </div>
-    <div id="decl-exp-list" style="margin-bottom:8px;"></div>
-    <button type="button" onclick="declAddExpenseRow()" style="width:100%;padding:8px;border-radius:8px;background:rgba(39,174,96,0.1);border:1px dashed rgba(39,174,96,0.3);color:var(--green);font-family:'Outfit',sans-serif;font-size:12px;font-weight:700;cursor:pointer;margin-bottom:12px;">+ Add another expense</button>
-    <div class="modal-actions" style="margin-top:6px;">
-      <button class="modal-cancel" onclick="cancelDeclaration()">Back</button>
-      <button class="modal-confirm" id="decl-submit-btn" onclick="submitDeclaration()">Submit & Log Out</button>
-    </div>
+    <div class="modal-sub" id="decl-sub"></div>
+    <div id="decl-body"></div>
   </div>
 </div>
 
@@ -6798,16 +6786,39 @@ function showToast(msg, type='success') {
   toastTimer = setTimeout(()=>t.classList.remove('show'), 2800);
 }
 /* ============ CASHIER DECLARATION + CROSS-CHECK ============ */
-let _declResolve = null;
+let _declResolve = null, _declSession = '', _declAttempt = 1;
+
 function askCashierDeclaration() {
   return new Promise(resolve => {
-    _declResolve = resolve;
-    ['decl-cash','decl-online'].forEach(id => document.getElementById(id).value = '');
-    document.getElementById('decl-exp-list').innerHTML = '';
-    declAddExpenseRow();
+    _declResolve = resolve; _declSession = genId(); _declAttempt = 1;
+    renderDeclForm();
     document.getElementById('decl-modal').classList.add('open');
-    setTimeout(() => document.getElementById('decl-cash').focus(), 100);
+    setTimeout(() => { const el = document.getElementById('decl-cash'); if (el) el.focus(); }, 100);
   });
+}
+
+function renderDeclForm() {
+  document.getElementById('decl-sub').textContent = _declAttempt === 1
+    ? 'Enter your figures for this shift before logging out. Use 0 if none.'
+    : 'Please re-check and enter the correct figures.';
+  document.getElementById('decl-body').innerHTML = `
+    <div class="of-label">Cash amount collected (Rs)</div>
+    <input class="of-input" type="number" id="decl-cash" min="0" placeholder="0">
+    <div class="of-label">Online amount (JazzCash + Card + Bank + FoodPanda) (Rs)</div>
+    <input class="of-input" type="number" id="decl-online" min="0" placeholder="0">
+    <div class="of-label" style="display:flex;justify-content:space-between;align-items:center;">
+      <span>Expenses paid — what for, and how much</span>
+      <span style="color:var(--orange);font-weight:800;">Total: <span id="decl-exp-total">Rs 0</span></span>
+    </div>
+    <div id="decl-exp-list" style="margin-bottom:8px;"></div>
+    <button type="button" onclick="declAddExpenseRow()" style="width:100%;padding:8px;border-radius:8px;background:rgba(39,174,96,0.1);border:1px dashed rgba(39,174,96,0.3);color:var(--green);font-family:'Outfit',sans-serif;font-size:12px;font-weight:700;cursor:pointer;margin-bottom:12px;">+ Add another expense</button>
+    ${_declAttempt > 1 ? `<div class="of-label" style="color:var(--orange);">Reason for correction (required)</div>
+    <textarea id="decl-reason" rows="2" placeholder="e.g. counted wrong, forgot an expense, put JazzCash in cash…" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;padding:11px 12px;color:var(--text);font-family:'Outfit',sans-serif;font-size:14px;outline:none;resize:none;margin-bottom:12px;"></textarea>` : ''}
+    <div class="modal-actions" style="margin-top:6px;">
+      ${_declAttempt === 1 ? '<button class="modal-cancel" onclick="cancelDeclaration()">Back</button>' : ''}
+      <button class="modal-confirm" id="decl-submit-btn" onclick="submitDeclaration()">Submit & Log Out</button>
+    </div>`;
+  declAddExpenseRow();
 }
 const EXPENSE_PRESETS = ['Rider Fuel','Owner Expense','Owner food','Ghar food','Staff food','Vaggie bill','Chicken bill','Staff advance'];
 
@@ -6873,37 +6884,83 @@ function cancelDeclaration() {
   if (_declResolve) _declResolve(false);
   _declResolve = null;
 }
+function _declFinish() {
+  try { localStorage.removeItem('crustify_shift_start_' + activeBranch + '_' + currentStaff); } catch(e) {}
+  closeModal('decl-modal');
+  if (_declResolve) _declResolve(true);
+  _declResolve = null;
+}
+
 async function submitDeclaration() {
   const cashV = document.getElementById('decl-cash').value, onlineV = document.getElementById('decl-online').value;
   if ([cashV, onlineV].some(v => v === '' || isNaN(Number(v)) || Number(v) < 0)) { showToast('Enter cash and online amounts (use 0 if none)', 'error'); return; }
-  const cash = Number(cashV), online = Number(onlineV);
+  const cash = Math.round(Number(cashV)), online = Math.round(Number(onlineV));
   const expItems = [];
   let expBad = false;
   document.querySelectorAll('.decl-exp-row').forEach(row => {
     const desc = expGetDesc(row, 'decl-exp');
     const amtV = row.querySelector('.decl-exp-amt').value;
-    if (!desc && amtV === '') return; // untouched row — ignore
+    if (!desc && amtV === '') return;
     if (!desc || amtV === '' || isNaN(Number(amtV)) || Number(amtV) <= 0) { expBad = true; return; }
-    const type = row.querySelector('.decl-exp-type').value;
-    expItems.push({ desc: desc, amount: Number(amtV), type: type });
+    expItems.push({ desc: desc, amount: Math.round(Number(amtV)), type: row.querySelector('.decl-exp-type').value });
   });
   if (expBad) { showToast('Each expense needs a description and an amount above 0', 'error'); return; }
   const exp = expItems.filter(i => i.type !== 'finance').reduce((s, i) => s + i.amount, 0);
-  if (!confirm('Submit and log out?\n\nCash: Rs ' + cash + '\nOnline: Rs ' + online + '\nExpenses: Rs ' + exp + (expItems.length ? '\n' + expItems.map(i => '  • ' + i.desc + ' — Rs ' + i.amount).join('\n') : '') + '\n\nYou cannot change these afterwards.')) return;
+  let reason = null;
+  if (_declAttempt > 1) {
+    reason = (document.getElementById('decl-reason').value || '').trim();
+    if (!reason) { showToast('Write the reason for changing your figures', 'error'); return; }
+  }
+
   const btn = document.getElementById('decl-submit-btn');
   btn.disabled = true;
+  let sys;
+  try {
+    const rows = await _xcFetchAll(shiftStart ? shiftStart.toISOString() : _dtLocalToISO(todayKey() + 'T00:00'), new Date().toISOString(), currentStaff);
+    sys = _xcCalc(rows);
+  } catch (e) { btn.disabled = false; showToast('Could not load system figures — check internet', 'error'); return; }
+
+  const sc = Math.round(sys.cash), so = Math.round(sys.online), se = Math.round(sys.exp);
+  const mismatch = cash !== (sc - se) || online !== so || exp !== se;
+
+  // SAVED FIRST — the cashier sees no system figure until this succeeds.
   const res = await sbWrite('cashier_declarations', 'insert', [{
-    id: genId(), branch: activeBranch, date: todayKey(), staff: currentStaff,
+    id: genId(), session_id: _declSession, attempt_no: _declAttempt,
+    branch: activeBranch, date: todayKey(), staff: currentStaff,
     cash_amount: cash, online_amount: online, expenses_amount: exp, expense_items: expItems,
+    pos_cash: sc, pos_online: so, pos_expenses: se, has_mismatch: mismatch, reason: reason,
     shift_start: shiftStart ? shiftStart.toISOString() : null,
     shift_end: new Date().toISOString()
   }]);
   btn.disabled = false;
-  if (res && res.error) { showToast('Could not save your report — check internet and try again', 'error'); return; }
-  localStorage.removeItem('crustify_shift_start_' + activeBranch + '_' + currentStaff);
-  closeModal('decl-modal');
-  if (_declResolve) _declResolve(true);
-  _declResolve = null;
+  if (res && res.error) { showToast('⚠️ Could not save your report — check internet / SQL. Try again.', 'error'); return; }
+
+  if (!mismatch) { showToast('✅ Report matches the system', 'success'); _declFinish(); return; }
+  // Second attempt: recorded, log out, system figures are never revealed
+  if (_declAttempt > 1) { showToast('Correction submitted and recorded', 'success'); _declFinish(); return; }
+  renderDeclResult({ cash, online, exp }, { cash: sc - se, online: so, exp: se }, sys.expRows);
+}
+
+function renderDeclResult(ent, sys, expRows) {
+  const R = v => 'Rs ' + Math.round(v).toLocaleString('en-PK');
+  const line = (lbl, a, b) => {
+    const d = a - b;
+    return `<tr><td style="padding:7px 8px;font-weight:600;">${lbl}</td>
+      <td style="padding:7px 8px;text-align:right;">${R(a)}</td>
+      <td style="padding:7px 8px;text-align:right;color:var(--orange);font-weight:800;">${R(b)}</td>
+      <td style="padding:7px 8px;text-align:right;font-weight:800;color:${d ? 'var(--red)' : 'var(--green)'};">${d ? (d > 0 ? '+' : '−') + R(Math.abs(d)) : '✓'}</td></tr>`;
+  };
+  const sysExp = (expRows || []).length
+    ? expRows.map(t => `<div>${_xcEsc(t.items_text || '')} — ${R(Math.abs(t.total))}</div>`).join('')
+    : '<div>No expenses recorded in the system</div>';
+  document.getElementById('decl-sub').textContent = 'Please review your figures';
+  document.getElementById('decl-body').innerHTML = `
+    <div style="background:rgba(192,57,43,0.12);border:1px solid rgba(192,57,43,0.4);border-radius:10px;padding:10px 14px;margin-bottom:12px;font-size:13px;font-weight:700;color:var(--red);">⚠️ Your figures don't match the system. Your entry has been recorded.</div>
+    <table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:10px;">
+      <thead><tr style="color:var(--text3);font-size:11px;text-transform:uppercase;"><th style="text-align:left;padding:6px 8px;">Item</th><th style="text-align:right;padding:6px 8px;">You entered</th><th style="text-align:right;padding:6px 8px;">System</th><th style="text-align:right;padding:6px 8px;">Diff</th></tr></thead>
+      <tbody>${line('Cash', ent.cash, sys.cash)}${line('Online', ent.online, sys.online)}${line('Expenses', ent.exp, sys.exp)}</tbody></table>
+    <div style="font-size:12px;color:var(--text2);background:var(--surface2);border-radius:8px;padding:8px 10px;margin-bottom:12px;line-height:1.6;"><b>Expenses in the system:</b>${sysExp}</div>
+    <button class="pay-complete-btn" style="padding:12px;font-size:14px;" onclick="_declAttempt=2;renderDeclForm();">Re-enter correct values</button>`;
 }
 
 let _xceId = null;
@@ -6980,7 +7037,7 @@ async function saveXcEdit() {
   loadCrossCheck();
 }
 
-let _xcRows = [], _xcOpening = 0, _xcDecls = [];
+let _xcRows = [], _xcOpening = 0, _xcDecls = [], _xcStaffRows = [];
 function _xcExpDetail(d) {
   const items = Array.isArray(d.expense_items) ? d.expense_items : [];
   if (!items.length) return '';
@@ -7019,8 +7076,9 @@ function _xcCalc(rows) {
              + s(bills.filter(t => t.method === 'split'), t => t.split_cash || 0);
   const online = s(bills.filter(t => ['jazzcash','card','bank','foodpanda'].includes(t.method)), t => t.total || 0)
                + s(bills.filter(t => t.method === 'split'), t => t.split_card || 0);
-  const exp = s(rows.filter(t => t.method === 'expense' && !/^\s*\[FINANCE\]/i.test(t.items_text || '')), t => Math.abs(t.total || 0));
-  return { cash, online, exp };
+  const expRows = rows.filter(t => t.method === 'expense' && !/^\s*\[FINANCE\]/i.test(t.items_text || ''));
+  const exp = s(expRows, t => Math.abs(t.total || 0));
+  return { cash, online, exp, expRows };
 }
 
 async function loadCrossCheck() {
@@ -7037,7 +7095,9 @@ async function loadCrossCheck() {
       .order('shift_end', { ascending: true });
     if (dErr) throw dErr;
     _xcDecls = decls || [];
-    await Promise.all(_xcDecls.map(async d => {
+    const { data: st } = await sb.from('staff').select('name,role');
+    _xcStaffRows = st || [];
+    await Promise.all(_xcDecls.filter(d => !d.session_id).map(async d => {
       const start = d.shift_start || new Date(new Date(d.shift_end).getTime() - 16 * 3600 * 1000).toISOString();
       d._pos = _xcCalc(await _xcFetchAll(start, d.shift_end, d.staff));
     }));
@@ -7077,29 +7137,55 @@ function renderCrossCheck() {
       : '<span style="color:var(--red);font-weight:800;">' + (d > 0 ? '+' : '−') + 'Rs ' + Math.abs(d).toLocaleString('en-PK') + (d > 0 ? ' (cashier higher)' : ' (cashier lower)') + '</span>';
   };
 
-  // One block of 3 rows per submitted report
-  const declRows = decls.map(d => {
-    const items = [['Cash', d.cash_amount, d._pos.cash], ['Online', d.online_amount, d._pos.online], ['Expenses', d.expenses_amount, d._pos.exp]];
-    return items.map((it, i) => `<tr${i === 0 ? ' style="border-top:2px solid var(--border);"' : ''}>
-      ${i === 0 ? `<td rowspan="3" style="font-weight:700;vertical-align:top;">${_xcEsc(d.staff)}${currentStaffRole === 'Admin' ? `<br><button onclick="openXcEdit('${d.id}')" style="margin-top:6px;padding:4px 10px;border-radius:6px;background:rgba(142,68,173,0.15);border:1px solid rgba(142,68,173,0.4);color:#bb77ff;font-family:'Outfit',sans-serif;font-size:11px;font-weight:700;cursor:pointer;">✏️ Edit</button>` : ''}</td><td rowspan="3" style="font-size:12px;color:var(--text2);vertical-align:top;">${d.shift_start ? fmtT(d.shift_start) : '?'}<br>→ ${fmtT(d.shift_end)}</td>` : ''}
-      <td style="font-weight:600;">${it[0]}${it[0] === 'Expenses' ? _xcExpDetail(d) : ''}</td>
-      <td style="text-align:right;font-weight:700;color:var(--gold);">${R(it[1])}</td>
-      <td style="text-align:right;font-weight:700;color:var(--green);">${R(it[2])}</td>
-      <td>${diffCell(it[1], it[2])}</td></tr>`).join('');
+    // POS figures are stored at submit time; old reports (no session_id) fall back to the live calc.
+  const posOf = d => d.session_id
+    ? { cash: Number(d.pos_cash || 0) - Number(d.pos_expenses || 0), online: Number(d.pos_online || 0), exp: Number(d.pos_expenses || 0) }
+    : { cash: d._pos.cash - d._pos.exp, online: d._pos.online, exp: d._pos.exp };
+  const isWrong = d => { const p = posOf(d);
+    return Math.round(Number(d.cash_amount) - p.cash) !== 0 || Math.round(Number(d.online_amount) - p.online) !== 0 || Math.round(Number(d.expenses_amount) - p.exp) !== 0; };
+
+  const sessions = {};
+  decls.forEach(d => { const k = d.session_id || d.id; (sessions[k] = sessions[k] || []).push(d); });
+  const sessList = Object.values(sessions).map(l => l.sort((a, b) => (a.attempt_no || 1) - (b.attempt_no || 1)));
+  const finals = sessList.map(l => l[l.length - 1]);
+
+  const sessHtml = sessList.map(list => {
+    const first = list[0], last = list[list.length - 1];
+    const chip = isWrong(first) ? (isWrong(last) ? ['STILL WRONG', 'var(--red)'] : ['WRONG ON 1ST TRY', 'var(--red)']) : ['CLEAN', 'var(--green)'];
+    const body = list.map(d => {
+      const p = posOf(d);
+      const items = [['Cash', d.cash_amount, p.cash], ['Online', d.online_amount, p.online], ['Expenses', d.expenses_amount, p.exp]];
+      return items.map((it, i) => `<tr${i === 0 ? ' style="border-top:2px solid var(--border);"' : ''}>
+        ${i === 0 ? `<td rowspan="3" style="font-weight:800;vertical-align:top;white-space:nowrap;">Attempt ${d.attempt_no || 1}<br><span style="font-size:11px;color:var(--text3);font-weight:600;">${fmtT(d.created_at || d.shift_end)}</span>${currentStaffRole === 'Admin' ? `<br><button onclick="openXcEdit('${d.id}')" style="margin-top:6px;padding:4px 10px;border-radius:6px;background:rgba(142,68,173,0.15);border:1px solid rgba(142,68,173,0.4);color:#bb77ff;font-family:'Outfit',sans-serif;font-size:11px;font-weight:700;cursor:pointer;">✏️ Edit</button>` : ''}</td>` : ''}
+        <td style="font-weight:600;">${it[0]}${it[0] === 'Expenses' ? _xcExpDetail(d) : ''}</td>
+        <td style="text-align:right;font-weight:700;color:var(--gold);">${R(it[1])}</td>
+        <td style="text-align:right;font-weight:700;color:var(--green);">${R(it[2])}</td>
+        <td>${diffCell(it[1], it[2])}</td></tr>`).join('')
+        + (d.reason ? `<tr><td></td><td colspan="4" style="color:var(--orange);font-size:12px;font-weight:700;">Reason for change: ${_xcEsc(d.reason)}</td></tr>` : '');
+    }).join('');
+    return `<div class="cb-section" style="margin-bottom:12px;">
+      <div class="cb-head" style="display:flex;justify-content:space-between;align-items:center;">
+        <span>👤 ${_xcEsc(first.staff)} · shift ${first.shift_start ? fmtT(first.shift_start) : '?'} → ${fmtT(first.shift_end)}</span>
+        <span style="background:${chip[1]};color:#fff;font-size:10px;font-weight:800;padding:2px 8px;border-radius:20px;">${chip[0]}</span>
+      </div>
+      <table class="transactions-table"><thead><tr><th></th><th>Item</th><th style="text-align:right;">Cashier says</th><th style="text-align:right;">POS actual</th><th>Difference</th></tr></thead><tbody>${body}</tbody></table>
+    </div>`;
   }).join('');
 
+  // Totals use each shift's FINAL attempt only, so a re-entry isn't double counted
   const tot = {
-    cash: sum(decls, d => Number(d.cash_amount)), cashP: sum(decls, d => d._pos.cash),
-    online: sum(decls, d => Number(d.online_amount)), onlineP: sum(decls, d => d._pos.online),
-    exp: sum(decls, d => Number(d.expenses_amount)), expP: sum(decls, d => d._pos.exp)
+    cash: sum(finals, d => Number(d.cash_amount)), cashP: sum(finals, d => posOf(d).cash),
+    online: sum(finals, d => Number(d.online_amount)), onlineP: sum(finals, d => posOf(d).online),
+    exp: sum(finals, d => Number(d.expenses_amount)), expP: sum(finals, d => posOf(d).exp)
   };
-  const totalsRows = decls.length ? `
-    <tr style="border-top:3px solid var(--border);background:var(--surface2);"><td colspan="3" style="font-weight:800;">TOTAL — Cash</td><td style="text-align:right;font-weight:800;color:var(--gold);">${R(tot.cash)}</td><td style="text-align:right;font-weight:800;color:var(--green);">${R(tot.cashP)}</td><td>${diffCell(tot.cash, tot.cashP)}</td></tr>
-    <tr style="background:var(--surface2);"><td colspan="3" style="font-weight:800;">TOTAL — Online</td><td style="text-align:right;font-weight:800;color:var(--gold);">${R(tot.online)}</td><td style="text-align:right;font-weight:800;color:var(--green);">${R(tot.onlineP)}</td><td>${diffCell(tot.online, tot.onlineP)}</td></tr>
-    <tr style="background:var(--surface2);"><td colspan="3" style="font-weight:800;">TOTAL — Expenses</td><td style="text-align:right;font-weight:800;color:var(--gold);">${R(tot.exp)}</td><td style="text-align:right;font-weight:800;color:var(--green);">${R(tot.expP)}</td><td>${diffCell(tot.exp, tot.expP)}</td></tr>` : '';
-
+  const totRow = (l, a, b) => `<tr><td style="font-weight:800;">${l}</td><td style="text-align:right;font-weight:800;color:var(--gold);">${R(a)}</td><td style="text-align:right;font-weight:800;color:var(--green);">${R(b)}</td><td>${diffCell(a, b)}</td></tr>`;
+  const totalsHtml = finals.length ? `<div class="cb-section" style="margin-bottom:14px;">
+      <div class="cb-head">TOTAL — final figure per shift</div>
+      <table class="transactions-table"><thead><tr><th>Item</th><th style="text-align:right;">Cashier says</th><th style="text-align:right;">POS actual</th><th>Difference</th></tr></thead>
+      <tbody>${totRow('Cash', tot.cash, tot.cashP)}${totRow('Online', tot.online, tot.onlineP)}${totRow('Expenses', tot.exp, tot.expP)}</tbody></table></div>` : '';
   const declaredNames = new Set(_xcDecls.map(d => d.staff));
-  const missing = [...new Set(rows.map(t => t.staff).filter(Boolean))].filter(n => !declaredNames.has(n));
+  const roleOf = n => (_xcStaffRows.find(s => s.name === n) || {}).role;
+const missing = [...new Set(rows.map(t => t.staff).filter(Boolean))].filter(n => !declaredNames.has(n) && !['Admin','Manager'].includes(roleOf(n)));
 
   const listTable = (title, arr) => !arr.length ? '' : `
     <div class="cb-section" style="margin-bottom:12px;">
@@ -7146,12 +7232,9 @@ function renderCrossCheck() {
     ${monthSummaryHTML}
     ${missing.length ? `<div style="background:rgba(230,126,34,0.12);border:1px solid rgba(230,126,34,0.4);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:var(--orange);">⚠️ No end-of-shift report from: <b>${missing.map(_xcEsc).join(', ')}</b> (still working, or logged out without submitting — Admin logouts aren't asked).</div>` : ''}
 
-    <div class="cb-section" style="margin-bottom:14px;">
-      <div class="cb-head">Cashier's report vs POS — matched per person and shift</div>
-      ${decls.length ? `<table class="transactions-table">
-        <thead><tr><th>Staff</th><th>Shift</th><th>Item</th><th style="text-align:right;">Cashier says</th><th style="text-align:right;">POS actual</th><th>Difference</th></tr></thead>
-        <tbody>${declRows}${totalsRows}</tbody></table>` : '<div style="padding:24px;text-align:center;color:var(--text3);font-size:13px;">No end-of-shift reports in this range yet.</div>'}
-    </div>
+    <div style="font-size:12px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:var(--text3);margin:6px 0 8px;">Cashier's report vs POS — matched per person and shift</div>
+    ${sessHtml || '<div style="padding:24px;text-align:center;color:var(--text3);font-size:13px;">No end-of-shift reports in this range yet.</div>'}
+    ${totalsHtml}
 
     ${listTable('🧾 Expenses', by('expense'))}
     ${listTable('− Cash Outs', by('cash-out'))}
